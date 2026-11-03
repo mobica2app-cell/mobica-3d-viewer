@@ -1,7 +1,22 @@
-# Mobica Babylon Corner Cutaway v1.5
+# Mobica 3D Viewer
 
-This version fixes corner cutaway detection. It identifies two perpendicular planar wall meshes that share an edge, excludes the floor plane, then hides both walls plus meshes whose bounds touch either wall plane and overlap its footprint. Original enabled/disabled states are restored in Room view.
+React + TypeScript + Vite + Babylon.js furniture/model editor with read-only 3-day GLB sharing.
 
-Run `npm install` then `npm run dev`.
+## Frontend hosting
+Use **Cloudflare Pages**, not Workers. See [README-CLOUDFLARE-PAGES.md](README-CLOUDFLARE-PAGES.md).
 
-Note: accurate wall and attached-object detection requires separate wall/object meshes in the GLB. A single combined mesh cannot be split automatically by visibility toggling.
+## Sharing backend
+Supabase provides PostgreSQL metadata, private Storage, and Edge Functions. See [README-SHARING.md](README-SHARING.md).
+
+## Local setup
+```powershell
+npm install
+Copy-Item .env.example .env
+# Fill VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env
+npm run dev
+```
+
+Production build:
+```powershell
+npm run build
+```
