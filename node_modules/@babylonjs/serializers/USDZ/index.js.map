@@ -1,0 +1,1 @@
+{"version":3,"file":"index.js","sourceRoot":"","sources":["../../../../dev/serializers/src/USDZ/index.ts"],"names":[],"mappings":"AAAA,6DAA6D;AAC7D,cAAc,gBAAgB,CAAC","sourcesContent":["/* eslint-disable @typescript-eslint/no-restricted-imports */\r\nexport * from \"./usdzExporter\";\r\n"]}

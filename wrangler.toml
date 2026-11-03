@@ -1,0 +1,19 @@
+name = "mobica-model-shares"
+main = "worker.js"
+compatibility_date = "2026-11-03"
+
+[[r2_buckets]]
+binding = "MODELS"
+bucket_name = "mobica-model-shares"
+
+[[kv_namespaces]]
+binding = "SHARES"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+[vars]
+# Set this to your deployed editor domain, e.g. https://mobica-editor.pages.dev
+ALLOWED_ORIGIN = "*"
+MAX_MODEL_BYTES = "94371840"
+
+[triggers]
+crons = ["0 * * * *"]

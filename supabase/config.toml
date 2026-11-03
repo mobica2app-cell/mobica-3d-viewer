@@ -1,0 +1,5 @@
+[functions.share-model]
+verify_jwt = false
+
+[functions.cleanup-shares]
+verify_jwt = false

@@ -1,0 +1,1 @@
+{"version":3,"file":"index.js","sourceRoot":"","sources":["../../../../dev/serializers/src/glTF/index.ts"],"names":[],"mappings":"AAAA,6DAA6D;AAC7D,cAAc,oBAAoB,CAAC;AACnC,cAAc,aAAa,CAAC","sourcesContent":["/* eslint-disable @typescript-eslint/no-restricted-imports */\r\nexport * from \"./glTFFileExporter\";\r\nexport * from \"./2.0/index\";\r\n"]}
