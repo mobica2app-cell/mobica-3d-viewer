@@ -78,7 +78,7 @@ function EditorApp() {
     const node = primary == null ? null : ed.nodes.get(primary)
     if (!node) return
     const mat = findMeshes(node).find(m => m.material)?.material
-    if (mat instanceof PBRMaterial) { setColor(mat.albedoColor.toHexString()); setRoughness(mat.roughness) }
+    if (mat instanceof PBRMaterial) { setColor(mat.albedoColor.toHexString()); setRoughness(mat.roughness ?? 0.75) }
     else if (mat instanceof StandardMaterial) setColor(mat.diffuseColor.toHexString())
   }
   useEffect(() => {
