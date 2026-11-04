@@ -3,18 +3,18 @@ import { Engine, Scene, ArcRotateCamera, Vector3, Color3, Color4, HemisphericLig
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader'
 import '@babylonjs/loaders/glTF'
 import { GLTF2Export } from '@babylonjs/serializers/glTF'
-import { Upload, Eye, EyeOff, Trash2, Download, Layers, Paintbrush, RotateCcw, Box, ChevronRight, ChevronDown, Share2, Copy, Clock, ExternalLink, Search, X } from 'lucide-react'
+import { Upload, Eye, EyeOff, Trash2, Download, Layers, Paintbrush, RotateCcw, Box, ChevronRight, ChevronDown, Share2, Copy, Clock, ExternalLink, Search, X, Undo2, Redo2 } from 'lucide-react'
 import './styles.css'
 
 type Item = { id: number; name: string; depth: number; visible: boolean; hasMesh: boolean; parentId: number | null }
 type Editor = { scene: Scene; camera: ArcRotateCamera; highlight: HighlightLayer; nodes: Map<number, Node>; rootNodes: Node[] }
+type ModelSnapshot = { hiddenIds: Set<number>; deletedIds: Set<number> }
 
 function childrenOf(node: Node): Node[] { return node.getChildren(undefined, true) }
 function descendants(node: Node): Node[] { return [node, ...node.getDescendants(false)] }
 function setNodeVisible(node: Node, visible: boolean) {
   for (const n of descendants(node)) if (n instanceof AbstractMesh) n.setEnabled(visible)
 }
-function isVisible(node: Node): boolean { return !(node instanceof AbstractMesh) || node.isEnabled() }
 function cloneMaterial(mesh: AbstractMesh) {
   if (!mesh.material) return null
   const cloned = mesh.material.clone(`${mesh.material.name}_mobica_${mesh.uniqueId}`)
@@ -27,7 +27,7 @@ function EditorApp() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const editorRef = useRef<Editor | null>(null)
   const engineRef = useRef<Engine | null>(null)
-  const modelRef = useRef<{ roots: Node[]; fileName: string } | null>(null)
+  const modelRef = useRef<{ roots: Node[]; fileName: string; hiddenIds: Set<number>; deletedIds: Set<number> } | null>(null)
   const [items, setItems] = useState<Item[]>([])
   const [selected, setSelected] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
@@ -45,8 +45,68 @@ function EditorApp() {
   const [shareUrl, setShareUrl] = useState('')
   const [shareExpiry, setShareExpiry] = useState<number | null>(null)
   const [shareRemaining, setShareRemaining] = useState('')
+  const [undoCount, setUndoCount] = useState(0)
+  const [redoCount, setRedoCount] = useState(0)
+  const undoStackRef = useRef<ModelSnapshot[]>([])
+  const redoStackRef = useRef<ModelSnapshot[]>([])
   
 
+
+  const captureSnapshot = (): ModelSnapshot => ({
+    hiddenIds: new Set(modelRef.current?.hiddenIds ?? []),
+    deletedIds: new Set(modelRef.current?.deletedIds ?? []),
+  })
+  const syncHistoryCounts = () => {
+    setUndoCount(undoStackRef.current.length)
+    setRedoCount(redoStackRef.current.length)
+  }
+  const pushHistory = () => {
+    if (!modelRef.current) return
+    undoStackRef.current.push(captureSnapshot())
+    if (undoStackRef.current.length > 10) undoStackRef.current.shift()
+    redoStackRef.current = []
+    syncHistoryCounts()
+  }
+  const applyModelState = () => {
+    const model = modelRef.current
+    if (!model) return
+    const all: Node[] = []
+    model.roots.forEach(root => all.push(...descendants(root)))
+    all.forEach(node => { if (node instanceof AbstractMesh) node.setEnabled(true) })
+    for (const id of model.hiddenIds) {
+      const node = all.find(n => n.uniqueId === id)
+      if (node) setNodeVisible(node, false)
+    }
+    for (const id of model.deletedIds) {
+      const node = all.find(n => n.uniqueId === id)
+      if (node) setNodeVisible(node, false)
+    }
+  }
+  const applySnapshot = (snapshot: ModelSnapshot) => {
+    if (!modelRef.current) return
+    modelRef.current.hiddenIds = new Set(snapshot.hiddenIds)
+    modelRef.current.deletedIds = new Set(snapshot.deletedIds)
+    applyModelState()
+    refresh()
+    select(null)
+  }
+  const undo = () => {
+    if (!undoStackRef.current.length) return
+    redoStackRef.current.push(captureSnapshot())
+    const previous = undoStackRef.current.pop()!
+    applySnapshot(previous)
+    syncHistoryCounts()
+    setStatus('Undo')
+  }
+  const redo = () => {
+    if (!redoStackRef.current.length) return
+    undoStackRef.current.push(captureSnapshot())
+    if (undoStackRef.current.length > 10) undoStackRef.current.shift()
+    const next = redoStackRef.current.pop()!
+    applySnapshot(next)
+    syncHistoryCounts()
+    setStatus('Redo')
+  }
 
   // Case-insensitive, accent-insensitive, multi-term layer search.
   const normalizeLayerText = (value: string) => value
@@ -78,10 +138,12 @@ function EditorApp() {
   const hideMatchingLayers = () => {
     const ed = editorRef.current
     if (!ed || !searchTerms.length || matchingLayerIds.size === 0) return
+    pushHistory()
     for (const id of matchingLayerIds) {
       const node = ed.nodes.get(id)
-      if (node) setNodeVisible(node, false)
+      if (node) modelRef.current?.hiddenIds.add(id)
     }
+    applyModelState()
     refresh()
     setStatus(`Hidden ${matchingLayerIds.size} matching layer${matchingLayerIds.size === 1 ? '' : 's'}`)
   }
@@ -89,10 +151,9 @@ function EditorApp() {
   const unhideMatchingLayers = () => {
     const ed = editorRef.current
     if (!ed || !searchTerms.length || matchingLayerIds.size === 0) return
-    for (const id of matchingLayerIds) {
-      const node = ed.nodes.get(id)
-      if (node) setNodeVisible(node, true)
-    }
+    pushHistory()
+    for (const id of matchingLayerIds) modelRef.current?.hiddenIds.delete(id)
+    applyModelState()
     refresh()
     setStatus(`Unhidden ${matchingLayerIds.size} matching layer${matchingLayerIds.size === 1 ? '' : 's'}`)
   }
@@ -104,7 +165,8 @@ function EditorApp() {
     ed.nodes.clear()
     const walk = (node: Node, depth: number, parentId: number | null) => {
       ed.nodes.set(node.uniqueId, node)
-      output.push({ id: node.uniqueId, name: node.name || `Layer ${node.uniqueId}`, depth, visible: isVisible(node), hasMesh: node instanceof AbstractMesh, parentId })
+      if (modelRef.current?.deletedIds.has(node.uniqueId)) return
+      output.push({ id: node.uniqueId, name: node.name || `Layer ${node.uniqueId}`, depth, visible: findMeshes(node).some(mesh => mesh.isEnabled()), hasMesh: node instanceof AbstractMesh, parentId })
       childrenOf(node).forEach(child => walk(child, depth + 1, node.uniqueId))
     }
     modelRef.current?.roots.forEach(root => walk(root, 0, null))
@@ -187,7 +249,8 @@ function EditorApp() {
       const imported = [...result.transformNodes, ...result.meshes]
       const ids = new Set(imported.map(n => n.uniqueId))
       const roots = imported.filter(n => !n.parent || !ids.has(n.parent.uniqueId))
-      modelRef.current = { roots, fileName: file.name }
+      modelRef.current = { roots, fileName: file.name, hiddenIds: new Set(), deletedIds: new Set() }
+      undoStackRef.current = []; redoStackRef.current = []; syncHistoryCounts()
       selectedIdsRef.current = new Set()
       setSelectedIds(new Set())
       setSelected(null)
@@ -220,7 +283,12 @@ function EditorApp() {
   const setAllVisible = (visible: boolean) => {
     const ed = editorRef.current
     if (!ed || !modelRef.current) return
-    modelRef.current.roots.forEach(root => setNodeVisible(root, visible))
+    if (visible) {
+      if (!modelRef.current.hiddenIds.size) return
+      pushHistory()
+      modelRef.current.hiddenIds.clear()
+      applyModelState()
+    }
     refresh()
     setStatus(visible ? 'All layers are visible' : 'All layers hidden')
   }
@@ -228,7 +296,10 @@ function EditorApp() {
     const ed = editorRef.current
     if (!ed) return
     const ids = selectedIds.size ? [...selectedIds] : selected == null ? [] : [selected]
-    ids.forEach(id => { const node = ed.nodes.get(id); if (node) setNodeVisible(node, visible) })
+    if (!ids.length) return
+    pushHistory()
+    ids.forEach(id => visible ? modelRef.current?.hiddenIds.delete(id) : modelRef.current?.hiddenIds.add(id))
+    applyModelState()
     refresh()
     select(selected)
   }
@@ -247,16 +318,25 @@ function EditorApp() {
   const toggleVisibility = (id: number) => {
     const node = editorRef.current?.nodes.get(id)
     if (!node) return
-    const meshes = findMeshes(node)
-    const next = !meshes.some(m => m.isEnabled())
-    setNodeVisible(node, next)
+    const model = modelRef.current
+    if (!model) return
+    const next = model.hiddenIds.has(id)
+    pushHistory()
+    if (next) model.hiddenIds.delete(id); else model.hiddenIds.add(id)
+    applyModelState()
     refresh(); select(selected)
   }
   const remove = () => {
-    const node = chosen(); if (!node) return
-    node.dispose(false, true)
-    if (modelRef.current) modelRef.current.roots = modelRef.current.roots.filter(r => r !== node)
-    select(null); refresh(); setStatus('Layer removed from current model')
+    const model = modelRef.current
+    const ids = selectedIds.size ? [...selectedIds] : selected == null ? [] : [selected]
+    if (!model || !ids.length) return
+    pushHistory()
+    ids.forEach(id => {
+      model.deletedIds.add(id)
+      model.hiddenIds.delete(id)
+    })
+    applyModelState()
+    select(null); refresh(); setStatus(`Deleted ${ids.length} layer${ids.length === 1 ? '' : 's'} · available in Undo`)
   }
   const updateColor = (value: string) => {
     setColor(value)
@@ -286,53 +366,92 @@ function EditorApp() {
     }
     setColor('#ffffff'); setStatus(`Texture applied: ${file.name}`)
   }
-  const exportGLB = async () => {
+  const exportSceneBlob = async (name: string): Promise<Blob> => {
     const ed = editorRef.current
-    if (!ed || !modelRef.current) return
-    setBusy(true); setStatus('Exporting GLB…')
+    const model = modelRef.current
+    if (!ed || !model) throw new Error('No model loaded')
+    const allowed = new Set<number>()
+    const walk = (node: Node) => {
+      if (model.deletedIds.has(node.uniqueId)) return
+      allowed.add(node.uniqueId)
+      childrenOf(node).forEach(walk)
+    }
+    model.roots.forEach(walk)
+    const glb = await GLTF2Export.GLBAsync(ed.scene, name, {
+      shouldExportNode: node => allowed.has(node.uniqueId) && (!(node instanceof AbstractMesh) || node.isEnabled()),
+      meshCompressionMethod: 'Draco'
+    })
+    const blob = Object.values(glb.glTFFiles).find((value): value is Blob => value instanceof Blob && value.size > 0)
+    if (!blob) throw new Error('Babylon did not return a GLB file')
+    return blob
+  }
+
+  const exportGLB = async () => {
+    if (!editorRef.current || !modelRef.current) return
+    setBusy(true); setStatus('Exporting visible model…')
     try {
-      const allowed = new Set<number>()
-      for (const root of modelRef.current.roots) for (const node of descendants(root)) allowed.add(node.uniqueId)
-      setStatus('Compressing geometry with Draco and exporting GLB…')
-      const glb = await GLTF2Export.GLBAsync(ed.scene, 'mobica-edited', {
-        shouldExportNode: node => allowed.has(node.uniqueId) && (!(node instanceof AbstractMesh) || node.isEnabled()),
-        meshCompressionMethod: 'Draco'
-      })
-      const output = Object.values(glb.glTFFiles).find((value): value is Blob => value instanceof Blob && value.size > 0)
-      glb.downloadFiles()
-      setStatus(`Compressed GLB exported${output ? ` · ${(output.size / 1024 / 1024).toFixed(2)} MB` : ''}`)
+      const blob = await exportSceneBlob('mobica-edited')
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = 'mobica-edited.glb'; a.click()
+      URL.revokeObjectURL(url)
+      setStatus(`Compressed GLB exported · ${(blob.size / 1024 / 1024).toFixed(2)} MB`)
     } catch (err) { setStatus(`Export error: ${String(err)}`); console.error(err) }
     finally { setBusy(false) }
   }
+
   const createShareLink = async () => {
     const ed = editorRef.current
-    if (!ed || !modelRef.current) { setStatus('Upload a model before creating a share link'); return }
+    const model = modelRef.current
+    if (!ed || !model) { setStatus('Upload a model before creating a share link'); return }
     const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
     const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
     if (!supabaseUrl || !supabaseKey) { setStatus('Configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env'); return }
-    setBusy(true); setStatus('Preparing edited model for sharing…')
+    setBusy(true); setStatus('Preparing two model versions for sharing…')
+    const originalHidden = new Set(model.hiddenIds)
     try {
-      const allowed = new Set<number>()
-      for (const root of modelRef.current.roots) for (const node of descendants(root)) allowed.add(node.uniqueId)
-      setStatus('Compressing geometry with Draco…')
-      const exported = await GLTF2Export.GLBAsync(ed.scene, 'mobica-share', {
-        shouldExportNode: node => allowed.has(node.uniqueId) && (!(node instanceof AbstractMesh) || node.isEnabled()),
-        meshCompressionMethod: 'Draco'
-      })
-      const blob = Object.values(exported.glTFFiles).find((value): value is Blob => value instanceof Blob && value.size > 0)
-      if (!blob) throw new Error('Babylon did not return a GLB file')
-      const form = new FormData()
-      form.append('model', blob, `${modelRef.current.fileName.replace(/\.glb$/i, '')}-edited.glb`)
-      form.append('filename', modelRef.current.fileName)
-      setStatus('Uploading edited model to Supabase…')
-      const response = await fetch(`${supabaseUrl}/functions/v1/share-model`, { method: 'POST', headers: { apikey: supabaseKey }, body: form })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error || `Share creation failed (${response.status})`)
-      const url = new URL(`/share/${data.id}`, window.location.origin).toString()
-      setShareUrl(url); setShareExpiry(Number(data.expiresAt)); setStatus('Share link created · expires in 3 days')
+      // Version 1: all non-deleted layers, including layers currently hidden in the editor.
+      model.hiddenIds.clear()
+      applyModelState()
+      setStatus('Compressing full model with Draco…')
+      const fullBlob = await exportSceneBlob('mobica-full')
+
+      // Version 2: only currently visible layers; deleted and hidden layers are omitted.
+      model.hiddenIds = new Set(originalHidden)
+      applyModelState()
+      setStatus('Compressing visible-only model with Draco…')
+      const visibleBlob = await exportSceneBlob('mobica-visible')
+
+      const upload = async (blob: Blob, suffix: string) => {
+        const form = new FormData()
+        const baseName = model.fileName.replace(/\.glb$/i, '')
+        form.append('model', blob, `${baseName}-${suffix}.glb`)
+        form.append('filename', `${baseName}-${suffix}.glb`)
+        const response = await fetch(`${supabaseUrl}/functions/v1/share-model`, {
+          method: 'POST', headers: { apikey: supabaseKey }, body: form
+        })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || `Share upload failed (${response.status})`)
+        return data
+      }
+
+      setStatus('Uploading full model…')
+      const fullShare = await upload(fullBlob, 'full')
+      setStatus('Uploading visible-only model…')
+      const visibleShare = await upload(visibleBlob, 'visible')
+      const url = new URL(`/share/${visibleShare.id}?full=${encodeURIComponent(fullShare.id)}`, window.location.origin).toString()
+      const expiresAt = Math.min(Number(fullShare.expiresAt), Number(visibleShare.expiresAt))
+      setShareUrl(url); setShareExpiry(expiresAt); setStatus('Two-version share link created · expires in 3 days')
       try { await navigator.clipboard.writeText(url) } catch { /* user can copy from the dialog */ }
-    } catch (err) { setStatus(`Share error: ${String(err)}`); console.error(err) }
-    finally { setBusy(false) }
+    } catch (err) {
+      setStatus(`Share error: ${String(err)}`)
+      console.error(err)
+    } finally {
+      model.hiddenIds = originalHidden
+      applyModelState()
+      refresh()
+      setBusy(false)
+    }
   }
 
   const renderItem = (item: Item) => {
@@ -366,7 +485,7 @@ function EditorApp() {
 
   return <div className="app">
     <header className="topbar"><div className="brand"><span className="logo"><Box size={21}/></span><div><strong>MOBICA</strong><small>3D MATERIAL STUDIO</small></div></div>
-      <div className="toolbar"><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><button className="btn" onClick={exportGLB} disabled={!filename || busy}><Download size={16}/> Export GLB</button><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
+      <div className="toolbar"><button className="btn historyBtn" onClick={undo} disabled={!undoCount || busy} title="Undo (last 10 hide/delete actions)"><Undo2 size={15}/> Undo</button><button className="btn historyBtn" onClick={redo} disabled={!redoCount || busy} title="Redo"><Redo2 size={15}/> Redo</button><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><button className="btn" onClick={exportGLB} disabled={!filename || busy}><Download size={16}/> Export GLB</button><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
     <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size}><EyeOff size={14}/> Hide selected</button></div>
       <div className="layerSearch">
         <Search size={15}/>
@@ -378,29 +497,39 @@ function EditorApp() {
       <section className="viewport"><canvas ref={canvasRef}/><div className="viewportBadge">BABYLON.JS · PBR RENDERER</div>{!filename && <div className="welcome"><Box size={42}/><h2>Furniture model viewer</h2><p>Upload a GLB to inspect materials and hide cabinet doors, shelves or drawers.</p><label className="btn primary"><Upload size={16}/> Open model<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f) }}/></label></div>}<div className="status">{busy ? 'Working… ' : ''}{status}</div></section>
       <aside className="inspector"><div className="panelTitle"><Paintbrush size={16}/> Inspector</div>{selected != null && chosen() ? <><div className="selectedLabel">{selectedIds.size > 1 ? `${selectedIds.size} layers selected · editing primary: ${chosen()?.name}` : chosen()?.name}</div><div className="actions"><button className="btn" onClick={() => toggleSelectedVisibility(false)}><EyeOff size={15}/> Hide selected</button><button className="btn" onClick={() => toggleSelectedVisibility(true)}><Eye size={15}/> Show selected</button><button className="btn danger" onClick={remove}><Trash2 size={15}/> Delete</button></div><label className="field">Base color<input type="color" value={color} onChange={e => updateColor(e.target.value)}/></label><label className="field">Roughness <span>{roughness.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={roughness} onChange={e => updateRoughness(Number(e.target.value))}/></label><label className="btn full"><Upload size={15}/> Replace base-color texture<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateTexture(f); e.target.value = '' }}/></label><p className="hint">Texture placement uses the selected mesh's original UV coordinates.</p></> : <p className="hint">Select a layer or click any visible part of the model.</p>}
       <div className="separator"/><div className="panelTitle">Lighting & quality</div><label className="field">Brightness <span>{exposure.toFixed(2)}×</span><input aria-label="Brightness" type="range" min="0.35" max="1.8" step="0.05" value={exposure} onChange={e => { const n = Number(e.target.value); setExposure(n); if (editorRef.current) editorRef.current.scene.imageProcessingConfiguration.exposure = n }}/></label><label className="field">Environment light <span>{environment.toFixed(2)}</span><input aria-label="Environment light" type="range" min="0" max="1.2" step="0.02" value={environment} onChange={e => { const n = Number(e.target.value); setEnvironment(n); if (editorRef.current) editorRef.current.scene.environmentIntensity = n }}/></label><label className="field">Render quality <span>{quality}%</span><input aria-label="Render quality" type="range" min="25" max="100" step="5" value={quality} onChange={e => updateQuality(Number(e.target.value))}/></label><p className="hint">Higher quality increases internal render resolution and texture filtering. It may use more GPU memory and reduce frame rate on slower devices.</p><button className="btn full" onClick={() => { setExposure(1); setEnvironment(0.32); updateQuality(75); if (editorRef.current) { editorRef.current.scene.imageProcessingConfiguration.exposure = 1; editorRef.current.scene.environmentIntensity = 0.32 } }}><RotateCcw size={14}/> Reset lighting & quality</button><p className="hint">Adjust brightness independently from environment reflections and render quality.</p></aside></main>
-    {shareUrl && <div className="shareOverlay"><div className="shareDialog"><button className="shareClose" onClick={() => setShareUrl('')}>×</button><div className="shareIcon"><Share2 size={22}/></div><h2>Share model</h2><p>Your edited model is uploaded. Anyone with this link can view, rotate and zoom it. Editing is disabled.</p><div className="shareUrl">{shareUrl}<button className="iconBtn" title="Copy link" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={16}/></button></div><div className="shareExpiry"><Clock size={15}/> Link expires in <strong>{shareRemaining || '3d 0h 0m 0s'}</strong></div><div className="shareActions"><button className="btn primary" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={15}/> Copy link</button><button className="btn" onClick={() => window.open(shareUrl, '_blank', 'noopener,noreferrer')}><ExternalLink size={15}/> Preview</button></div></div></div>}
+    {shareUrl && <div className="shareOverlay"><div className="shareDialog"><button className="shareClose" onClick={() => setShareUrl('')}>×</button><div className="shareIcon"><Share2 size={22}/></div><h2>Share model</h2><p>Two versions are included: the full model (with hidden layers restored, but deleted layers removed) and the visible-only model. Editing is disabled.</p><div className="shareUrl">{shareUrl}<button className="iconBtn" title="Copy link" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={16}/></button></div><div className="shareExpiry"><Clock size={15}/> Link expires in <strong>{shareRemaining || '3d 0h 0m 0s'}</strong></div><div className="shareActions"><button className="btn primary" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={15}/> Copy link</button><button className="btn" onClick={() => window.open(shareUrl, '_blank', 'noopener,noreferrer')}><ExternalLink size={15}/> Preview</button></div></div></div>}
   </div>
 }
 
 
-type ShareInfo = { id: string; filename: string; expiresAt: number; modelUrl: string }
-function SharedModelViewer({ id }: { id: string }) {
+type ShareInfo = { filename: string; expiresAt: number; visibleUrl: string; fullUrl: string }
+function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [info, setInfo] = useState<ShareInfo | null>(null)
   const [error, setError] = useState('')
   const [remaining, setRemaining] = useState('')
+  const [activeTab, setActiveTab] = useState<'full' | 'visible'>('full')
   useEffect(() => {
     const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
     const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
     if (!supabaseUrl || !supabaseKey) { setError('This viewer is not configured.'); return }
     let cancelled = false
-    fetch(`${supabaseUrl}/functions/v1/share-model?id=${encodeURIComponent(id)}`, { headers: { apikey: supabaseKey } }).then(async response => {
+    const fetchShare = async (shareId: string) => {
+      const response = await fetch(`${supabaseUrl}/functions/v1/share-model?id=${encodeURIComponent(shareId)}`, { headers: { apikey: supabaseKey } })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'This share link is unavailable or has expired.')
-      if (!cancelled) setInfo({ ...data, modelUrl: data.signedUrl })
+      return data
+    }
+    Promise.all([fetchShare(id), fetchShare(fullId || id)]).then(([visible, full]) => {
+      if (!cancelled) setInfo({
+        filename: visible.filename,
+        expiresAt: Math.min(Number(visible.expiresAt), Number(full.expiresAt)),
+        visibleUrl: visible.signedUrl,
+        fullUrl: full.signedUrl,
+      })
     }).catch(err => { if (!cancelled) setError(String(err.message || err)) })
     return () => { cancelled = true }
-  }, [id])
+  }, [id, fullId])
   useEffect(() => {
     if (!info) return
     const update = () => {
@@ -425,7 +554,7 @@ function SharedModelViewer({ id }: { id: string }) {
     let disposed = false
     const loadModel = async () => {
       try {
-        const result = await SceneLoader.ImportMeshAsync('', '', info.modelUrl, scene, undefined, '.glb')
+        const result = await SceneLoader.ImportMeshAsync('', '', activeTab === 'full' ? info.fullUrl : info.visibleUrl, scene, undefined, '.glb')
         if (disposed) return
         const meshes = result.meshes.filter(m => m.getTotalVertices() > 0)
         if (meshes.length) {
@@ -439,11 +568,12 @@ function SharedModelViewer({ id }: { id: string }) {
     engine.runRenderLoop(() => scene.render())
     const resize = () => engine.resize(); window.addEventListener('resize', resize)
     return () => { disposed = true; window.removeEventListener('resize', resize); engine.dispose() }
-  }, [info])
-  return <div className="sharedPage"><header className="sharedHeader"><div className="brand"><span className="logo"><Box size={21}/></span><div><strong>MOBICA</strong><small>3D MODEL PREVIEW</small></div></div><div className="sharedMeta"><span><Clock size={14}/> {remaining || 'Checking expiry…'}</span><span className="readOnlyTag">READ ONLY</span></div></header><main className="sharedViewport"><canvas ref={canvasRef}/>{!info && !error && <div className="sharedMessage">Loading shared model…</div>}{error && <div className="sharedMessage errorMessage"><h2>Link unavailable</h2><p>{error}</p></div>}{info && !error && <div className="sharedFileName">{info.filename}</div>}<div className="sharedHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</div></main></div>
+  }, [info, activeTab])
+  return <div className="sharedPage"><header className="sharedHeader"><div className="brand"><span className="logo"><Box size={21}/></span><div><strong>MOBICA</strong><small>3D MODEL PREVIEW</small></div></div><div className="sharedTabs"><button className={activeTab === 'full' ? 'active' : ''} onClick={() => setActiveTab('full')}>Full model</button><button className={activeTab === 'visible' ? 'active' : ''} onClick={() => setActiveTab('visible')}>Visible only</button></div><div className="sharedMeta"><span><Clock size={14}/> {remaining || 'Checking expiry…'}</span><span className="readOnlyTag">READ ONLY</span></div></header><main className="sharedViewport"><canvas ref={canvasRef}/>{!info && !error && <div className="sharedMessage">Loading shared model…</div>}{error && <div className="sharedMessage errorMessage"><h2>Link unavailable</h2><p>{error}</p></div>}{info && !error && <div className="sharedFileName">{info.filename}</div>}<div className="sharedHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</div></main></div>
 }
 
 export default function App() {
   const match = window.location.pathname.match(/^\/share\/([^/]+)\/?$/)
-  return match ? <SharedModelViewer id={decodeURIComponent(match[1])}/> : <EditorApp/>
+  const fullId = new URLSearchParams(window.location.search).get('full') || undefined
+  return match ? <SharedModelViewer id={decodeURIComponent(match[1])} fullId={fullId}/> : <EditorApp/>
 }

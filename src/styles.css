@@ -25,3 +25,16 @@
 .searchActions .btn{flex:1;justify-content:center;padding:7px 5px;font-size:9px}
 .searchShow{background:#183c35;border-color:#28695b;color:#c9fff0}
 .searchShow:hover{background:#205247}
+
+/* Undo/redo controls */
+.historyBtn{min-width:76px}
+.historyBtn:disabled{opacity:.35;cursor:not-allowed}
+/* Two versions in shared model link */
+.sharedTabs{display:flex;gap:4px;padding:4px;background:#202b37;border:1px solid #344252;border-radius:10px}
+.sharedTabs button{border:0;background:transparent;color:#aebccc;padding:8px 13px;border-radius:7px;font-size:11px;font-weight:700;white-space:nowrap}
+.sharedTabs button.active{background:#fff;color:#1c2936}
+@media(max-width:600px){
+  .sharedHeader{gap:8px}
+  .sharedTabs button{padding:7px 8px;font-size:10px}
+  .historyBtn{min-width:0}
+}
