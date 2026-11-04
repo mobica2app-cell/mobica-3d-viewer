@@ -38,3 +38,17 @@
   .sharedTabs button{padding:7px 8px;font-size:10px}
   .historyBtn{min-width:0}
 }
+
+
+/* Per-layer delete action (recoverable through Undo). */
+.layerDeleteBtn{color:#d88a8a;flex-shrink:0;padding:6px}
+.layerDeleteBtn:hover{color:#fff;background:#713b3b;border-radius:6px}
+.layer{gap:2px}
+.sharedViewport.previewLoading canvas{visibility:hidden}
+.previewLoadingMessage{background:#fff;pointer-events:auto}
+.previewLoadingMessage h2{margin:12px 0 4px;color:#243447}
+.previewLoadingMessage p{margin:0 0 8px;color:#526273}
+.previewLoadingMessage small{color:#8794a3}
+.previewSpinner{width:34px;height:34px;border:3px solid #dce5ec;border-top-color:#0f9b8e;border-radius:50%;animation:mobicaSpin .8s linear infinite}
+@keyframes mobicaSpin{to{transform:rotate(360deg)}}
+.sharedTabs button:disabled{opacity:.45;cursor:wait}

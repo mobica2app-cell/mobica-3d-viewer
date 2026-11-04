@@ -326,18 +326,25 @@ function EditorApp() {
     applyModelState()
     refresh(); select(selected)
   }
-  const remove = () => {
+  const deleteLayers = (ids: number[]) => {
     const model = modelRef.current
-    const ids = selectedIds.size ? [...selectedIds] : selected == null ? [] : [selected]
-    if (!model || !ids.length) return
+    const validIds = ids.filter(id => model && editorRef.current?.nodes.has(id) && !model.deletedIds.has(id))
+    if (!model || !validIds.length) return
     pushHistory()
-    ids.forEach(id => {
+    validIds.forEach(id => {
       model.deletedIds.add(id)
       model.hiddenIds.delete(id)
     })
     applyModelState()
-    select(null); refresh(); setStatus(`Deleted ${ids.length} layer${ids.length === 1 ? '' : 's'} · available in Undo`)
+    select(null)
+    refresh()
+    setStatus(`Deleted ${validIds.length} layer${validIds.length === 1 ? '' : 's'} · available in Undo`)
   }
+  const remove = () => {
+    const ids = selectedIds.size ? [...selectedIds] : selected == null ? [] : [selected]
+    deleteLayers(ids)
+  }
+  const deleteLayer = (id: number) => deleteLayers([id])
   const updateColor = (value: string) => {
     setColor(value)
     const node = chosen(); if (!node) return
@@ -468,7 +475,8 @@ function EditorApp() {
         {hasChildren ? expanded.has(item.id) ? <ChevronDown size={14}/> : <ChevronRight size={14}/> : <span style={{width:14}}/>}
       </button>
       <button className="layerName" onClick={(e) => select(item.id, e.ctrlKey || e.metaKey || e.shiftKey)} title={`${item.name} · Ctrl/Cmd-click to multi-select`}>{item.name}</button>
-      <button className="iconBtn" title="Hide/show" onClick={() => toggleVisibility(item.id)}>{item.visible ? <Eye size={15}/> : <EyeOff size={15}/>}</button>
+      <button className="iconBtn" title="Hide/show" aria-label={`Hide or show ${item.name}`} onClick={() => toggleVisibility(item.id)}>{item.visible ? <Eye size={15}/> : <EyeOff size={15}/>}</button>
+      <button className="iconBtn layerDeleteBtn" title={`Delete ${item.name}`} aria-label={`Delete ${item.name}`} onClick={() => deleteLayer(item.id)}><Trash2 size={14}/></button>
     </div>
   }
   useEffect(() => {
@@ -509,11 +517,20 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const [error, setError] = useState('')
   const [remaining, setRemaining] = useState('')
   const [activeTab, setActiveTab] = useState<'full' | 'visible'>('full')
+  const [previewReady, setPreviewReady] = useState(false)
+  const [previewProgress, setPreviewProgress] = useState('Preparing model preview…')
+  const fullMeshesRef = useRef<AbstractMesh[]>([])
+  const visibleMeshesRef = useRef<AbstractMesh[]>([])
+  const cameraRef = useRef<ArcRotateCamera | null>(null)
+
   useEffect(() => {
     const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
     const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
     if (!supabaseUrl || !supabaseKey) { setError('This viewer is not configured.'); return }
     let cancelled = false
+    setPreviewReady(false)
+    setError('')
+    setPreviewProgress('Checking share links…')
     const fetchShare = async (shareId: string) => {
       const response = await fetch(`${supabaseUrl}/functions/v1/share-model?id=${encodeURIComponent(shareId)}`, { headers: { apikey: supabaseKey } })
       const data = await response.json()
@@ -530,6 +547,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     }).catch(err => { if (!cancelled) setError(String(err.message || err)) })
     return () => { cancelled = true }
   }, [id, fullId])
+
   useEffect(() => {
     if (!info) return
     const update = () => {
@@ -537,39 +555,130 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
       setRemaining(sec <= 0 ? 'Expired' : `${Math.floor(sec / 86400)}d ${Math.floor(sec % 86400 / 3600)}h ${Math.floor(sec % 3600 / 60)}m ${sec % 60}s`)
       if (sec <= 0) setError('This share link has expired.')
     }
-    update(); const timer = window.setInterval(update, 1000); return () => window.clearInterval(timer)
+    update()
+    const timer = window.setInterval(update, 1000)
+    return () => window.clearInterval(timer)
   }, [info])
+
+  // Create one viewer scene and preload BOTH GLB versions before revealing the page.
+  // Tabs only switch mesh visibility after preload; they do not trigger another download.
   useEffect(() => {
     if (!info || !canvasRef.current) return
     const canvas = canvasRef.current
     const engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true, adaptToDeviceRatio: true })
-    const scene = new Scene(engine); scene.clearColor = new Color4(1, 1, 1, 1); scene.useRightHandedSystem = true
+    const scene = new Scene(engine)
+    scene.clearColor = new Color4(1, 1, 1, 1)
+    scene.useRightHandedSystem = true
     scene.imageProcessingConfiguration.toneMappingEnabled = false
     const camera = new ArcRotateCamera('shared-camera', -Math.PI / 3, Math.PI / 2.7, 8, Vector3.Zero(), scene)
-    camera.attachControl(canvas, false); camera.lowerRadiusLimit = 0.08; camera.wheelPrecision = 55; camera.panningSensibility = 180
-    const hemi = new HemisphericLight('shared-fill', new Vector3(0, 1, 0), scene); hemi.intensity = 0.55
-    const sun = new DirectionalLight('shared-key', new Vector3(-0.6, -1.5, -0.7), scene); sun.intensity = 0.65
+    camera.attachControl(canvas, false)
+    camera.lowerRadiusLimit = 0.08
+    camera.wheelPrecision = 55
+    camera.panningSensibility = 180
+    cameraRef.current = camera
+    const hemi = new HemisphericLight('shared-fill', new Vector3(0, 1, 0), scene)
+    hemi.intensity = 0.55
+    const sun = new DirectionalLight('shared-key', new Vector3(-0.6, -1.5, -0.7), scene)
+    sun.intensity = 0.65
     scene.environmentTexture = CubeTexture.CreateFromPrefilteredData('https://assets.babylonjs.com/environments/environmentSpecular.env', scene)
     scene.environmentIntensity = 0.45
     let disposed = false
-    const loadModel = async () => {
-      try {
-        const result = await SceneLoader.ImportMeshAsync('', '', activeTab === 'full' ? info.fullUrl : info.visibleUrl, scene, undefined, '.glb')
-        if (disposed) return
-        const meshes = result.meshes.filter(m => m.getTotalVertices() > 0)
-        if (meshes.length) {
-          let min = new Vector3(Infinity, Infinity, Infinity), max = new Vector3(-Infinity, -Infinity, -Infinity)
-          for (const mesh of meshes) { mesh.computeWorldMatrix(true); const b = mesh.getBoundingInfo().boundingBox; min = Vector3.Minimize(min, b.minimumWorld); max = Vector3.Maximize(max, b.maximumWorld) }
-          camera.setTarget(min.add(max).scale(0.5)); camera.radius = Math.max(max.subtract(min).length() * 0.85, 0.5)
-        }
-      } catch (err) { if (!disposed) setError(`Could not load model: ${String(err)}`) }
+
+    const frameModel = (meshes: AbstractMesh[]) => {
+      const geometry = meshes.filter(mesh => mesh.getTotalVertices() > 0)
+      if (!geometry.length) return
+      let min = new Vector3(Infinity, Infinity, Infinity)
+      let max = new Vector3(-Infinity, -Infinity, -Infinity)
+      for (const mesh of geometry) {
+        mesh.computeWorldMatrix(true)
+        const bounds = mesh.getBoundingInfo().boundingBox
+        min = Vector3.Minimize(min, bounds.minimumWorld)
+        max = Vector3.Maximize(max, bounds.maximumWorld)
+      }
+      camera.setTarget(min.add(max).scale(0.5))
+      camera.radius = Math.max(max.subtract(min).length() * 0.85, 0.5)
     }
-    void loadModel()
+
+    const loadBothModels = async () => {
+      try {
+        setPreviewReady(false)
+        setPreviewProgress('Loading full model…')
+        const fullResult = await SceneLoader.ImportMeshAsync('', '', info.fullUrl, scene, undefined, '.glb')
+        const fullMeshes = fullResult.meshes.filter(mesh => mesh instanceof AbstractMesh)
+        fullMeshes.forEach(mesh => mesh.setEnabled(false))
+        if (disposed) return
+
+        setPreviewProgress('Loading visible-only model…')
+        const visibleResult = await SceneLoader.ImportMeshAsync('', '', info.visibleUrl, scene, undefined, '.glb')
+        const visibleMeshes = visibleResult.meshes.filter(mesh => mesh instanceof AbstractMesh)
+        visibleMeshes.forEach(mesh => mesh.setEnabled(false))
+        if (disposed) return
+
+        fullMeshesRef.current = fullMeshes
+        visibleMeshesRef.current = visibleMeshes
+        const initialMeshes = fullMeshes
+        initialMeshes.forEach(mesh => mesh.setEnabled(true))
+        frameModel(initialMeshes)
+        setPreviewProgress('Both model versions are ready')
+        setPreviewReady(true)
+      } catch (err) {
+        if (!disposed) setError(`Could not preload both models: ${String(err)}`)
+      }
+    }
+
+    void loadBothModels()
     engine.runRenderLoop(() => scene.render())
-    const resize = () => engine.resize(); window.addEventListener('resize', resize)
-    return () => { disposed = true; window.removeEventListener('resize', resize); engine.dispose() }
-  }, [info, activeTab])
-  return <div className="sharedPage"><header className="sharedHeader"><div className="brand"><span className="logo"><Box size={21}/></span><div><strong>MOBICA</strong><small>3D MODEL PREVIEW</small></div></div><div className="sharedTabs"><button className={activeTab === 'full' ? 'active' : ''} onClick={() => setActiveTab('full')}>Full model</button><button className={activeTab === 'visible' ? 'active' : ''} onClick={() => setActiveTab('visible')}>Visible only</button></div><div className="sharedMeta"><span><Clock size={14}/> {remaining || 'Checking expiry…'}</span><span className="readOnlyTag">READ ONLY</span></div></header><main className="sharedViewport"><canvas ref={canvasRef}/>{!info && !error && <div className="sharedMessage">Loading shared model…</div>}{error && <div className="sharedMessage errorMessage"><h2>Link unavailable</h2><p>{error}</p></div>}{info && !error && <div className="sharedFileName">{info.filename}</div>}<div className="sharedHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</div></main></div>
+    const resize = () => engine.resize()
+    window.addEventListener('resize', resize)
+    return () => {
+      disposed = true
+      fullMeshesRef.current = []
+      visibleMeshesRef.current = []
+      cameraRef.current = null
+      window.removeEventListener('resize', resize)
+      engine.dispose()
+    }
+  }, [info])
+
+  useEffect(() => {
+    if (!previewReady) return
+    const showFull = activeTab === 'full'
+    fullMeshesRef.current.forEach(mesh => mesh.setEnabled(showFull))
+    visibleMeshesRef.current.forEach(mesh => mesh.setEnabled(!showFull))
+    const meshes = showFull ? fullMeshesRef.current : visibleMeshesRef.current
+    if (cameraRef.current) {
+      const geometry = meshes.filter(mesh => mesh.getTotalVertices() > 0)
+      if (geometry.length) {
+        let min = new Vector3(Infinity, Infinity, Infinity)
+        let max = new Vector3(-Infinity, -Infinity, -Infinity)
+        for (const mesh of geometry) {
+          mesh.computeWorldMatrix(true)
+          const bounds = mesh.getBoundingInfo().boundingBox
+          min = Vector3.Minimize(min, bounds.minimumWorld)
+          max = Vector3.Maximize(max, bounds.maximumWorld)
+        }
+        cameraRef.current.setTarget(min.add(max).scale(0.5))
+        cameraRef.current.radius = Math.max(max.subtract(min).length() * 0.85, 0.5)
+      }
+    }
+  }, [activeTab, previewReady])
+
+  return <div className="sharedPage">
+    <header className="sharedHeader">
+      <div className="brand"><span className="logo"><Box size={21}/></span><div><strong>MOBICA</strong><small>3D MODEL PREVIEW</small></div></div>
+      <div className="sharedTabs">
+        <button className={activeTab === 'full' ? 'active' : ''} onClick={() => setActiveTab('full')} disabled={!previewReady}>Full model</button>
+        <button className={activeTab === 'visible' ? 'active' : ''} onClick={() => setActiveTab('visible')} disabled={!previewReady}>Visible only</button>
+      </div>
+      <div className="sharedMeta"><span><Clock size={14}/> {remaining || 'Checking expiry…'}</span><span className="readOnlyTag">READ ONLY</span></div>
+    </header>
+    <main className={`sharedViewport ${!previewReady ? 'previewLoading' : ''}`}>
+      <canvas ref={canvasRef}/>
+      {!previewReady && !error && <div className="sharedMessage previewLoadingMessage"><div className="previewSpinner"/><h2>Preparing your 3D model</h2><p>{previewProgress}</p><small>Please wait while both model versions finish loading.</small></div>}
+      {error && <div className="sharedMessage errorMessage"><h2>Link unavailable</h2><p>{error}</p></div>}
+      {previewReady && !error && <><div className="sharedFileName">{info?.filename}</div><div className="sharedHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</div></>}
+    </main>
+  </div>
 }
 
 export default function App() {
