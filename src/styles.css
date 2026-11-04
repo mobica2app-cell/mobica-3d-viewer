@@ -22,7 +22,7 @@
 
 .searchSummary{align-items:flex-start;flex-direction:column}
 .searchActions{display:flex;gap:5px;width:100%}
-.searchActions .btn{flex:1;justify-content:center;padding:7px 5px;font-size:9px}
+.searchActions .btn{flex:1;min-width:0;justify-content:center;padding:7px 4px;font-size:9px;white-space:nowrap}
 .searchShow{background:#183c35;border-color:#28695b;color:#c9fff0}
 .searchShow:hover{background:#205247}
 
