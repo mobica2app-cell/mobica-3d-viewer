@@ -206,8 +206,6 @@ function EditorApp() {
     scene.imageProcessingConfiguration.contrast = 1
     const camera = new ArcRotateCamera('camera', -Math.PI / 3, Math.PI / 2.7, 8, Vector3.Zero(), scene)
     camera.attachControl(canvasRef.current, false)
-    // Reverse horizontal left-drag orbit direction without changing zoom or pan.
-    camera.inputs.attached.pointers.angularSensibilityX *= -1
     camera.wheelPrecision = 55
     camera.wheelDeltaPercentage = 0.01
     // Keep wheel gestures inside the 3D viewport; never zoom/scroll the page.
@@ -578,8 +576,6 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     scene.imageProcessingConfiguration.toneMappingEnabled = false
     const camera = new ArcRotateCamera('shared-camera', -Math.PI / 3, Math.PI / 2.7, 8, Vector3.Zero(), scene)
     camera.attachControl(canvas, false)
-    // Keep the shared preview's horizontal left-drag orbit direction consistent.
-    camera.inputs.attached.pointers.angularSensibilityX *= -1
     camera.lowerRadiusLimit = 0.08
     camera.wheelPrecision = 55
     camera.panningSensibility = 180
