@@ -86,6 +86,17 @@ function EditorApp() {
     setStatus(`Hidden ${matchingLayerIds.size} matching layer${matchingLayerIds.size === 1 ? '' : 's'}`)
   }
 
+  const unhideMatchingLayers = () => {
+    const ed = editorRef.current
+    if (!ed || !searchTerms.length || matchingLayerIds.size === 0) return
+    for (const id of matchingLayerIds) {
+      const node = ed.nodes.get(id)
+      if (node) setNodeVisible(node, true)
+    }
+    refresh()
+    setStatus(`Unhidden ${matchingLayerIds.size} matching layer${matchingLayerIds.size === 1 ? '' : 's'}`)
+  }
+
   const refresh = () => {
     const ed = editorRef.current
     if (!ed) return
@@ -282,11 +293,14 @@ function EditorApp() {
     try {
       const allowed = new Set<number>()
       for (const root of modelRef.current.roots) for (const node of descendants(root)) allowed.add(node.uniqueId)
+      setStatus('Compressing geometry with Draco and exporting GLB…')
       const glb = await GLTF2Export.GLBAsync(ed.scene, 'mobica-edited', {
-        shouldExportNode: node => allowed.has(node.uniqueId) && (!(node instanceof AbstractMesh) || node.isEnabled())
+        shouldExportNode: node => allowed.has(node.uniqueId) && (!(node instanceof AbstractMesh) || node.isEnabled()),
+        meshCompressionMethod: 'Draco'
       })
+      const output = Object.values(glb.glTFFiles).find((value): value is Blob => value instanceof Blob && value.size > 0)
       glb.downloadFiles()
-      setStatus('Edited GLB exported')
+      setStatus(`Compressed GLB exported${output ? ` · ${(output.size / 1024 / 1024).toFixed(2)} MB` : ''}`)
     } catch (err) { setStatus(`Export error: ${String(err)}`); console.error(err) }
     finally { setBusy(false) }
   }
@@ -300,8 +314,10 @@ function EditorApp() {
     try {
       const allowed = new Set<number>()
       for (const root of modelRef.current.roots) for (const node of descendants(root)) allowed.add(node.uniqueId)
+      setStatus('Compressing geometry with Draco…')
       const exported = await GLTF2Export.GLBAsync(ed.scene, 'mobica-share', {
-        shouldExportNode: node => allowed.has(node.uniqueId) && (!(node instanceof AbstractMesh) || node.isEnabled())
+        shouldExportNode: node => allowed.has(node.uniqueId) && (!(node instanceof AbstractMesh) || node.isEnabled()),
+        meshCompressionMethod: 'Draco'
       })
       const blob = Object.values(exported.glTFFiles).find((value): value is Blob => value instanceof Blob && value.size > 0)
       if (!blob) throw new Error('Babylon did not return a GLB file')
@@ -357,7 +373,7 @@ function EditorApp() {
         <input aria-label="Search layers" type="search" value={layerSearch} onChange={e => setLayerSearch(e.target.value)} placeholder="Search layers…" />
         {layerSearch && <button className="searchClear" aria-label="Clear layer search" title="Clear search" onClick={() => setLayerSearch('')}><X size={14}/></button>}
       </div>
-      {searchTerms.length > 0 && <div className="searchSummary">{matchingLayerIds.size} matching layer{matchingLayerIds.size === 1 ? '' : 's'}{matchingLayerIds.size > 0 && <button className="btn searchHide" onClick={hideMatchingLayers}><EyeOff size={13}/> Hide all matches</button>}</div>}
+      {searchTerms.length > 0 && <div className="searchSummary"><span>{matchingLayerIds.size} matching layer{matchingLayerIds.size === 1 ? '' : 's'}</span>{matchingLayerIds.size > 0 && <div className="searchActions"><button className="btn searchHide" onClick={hideMatchingLayers}><EyeOff size={13}/> Hide matches</button><button className="btn searchShow" onClick={unhideMatchingLayers}><Eye size={13}/> Unhide matches</button></div>}</div>}
       <p className="hint">Ctrl/Cmd-click layers to select multiple. Use Show all to restore every hidden object.</p><p className="hint">Click a cabinet door in the model or select its layer here. Hide it to reveal the interior.</p><div className="layers">{items.length ? (searchTerms.length && matchingLayerIds.size === 0 ? <div className="empty">No layers match “{layerSearch}”</div> : items.map(renderItem)) : <div className="empty">No model loaded</div>}</div></aside>
       <section className="viewport"><canvas ref={canvasRef}/><div className="viewportBadge">BABYLON.JS · PBR RENDERER</div>{!filename && <div className="welcome"><Box size={42}/><h2>Furniture model viewer</h2><p>Upload a GLB to inspect materials and hide cabinet doors, shelves or drawers.</p><label className="btn primary"><Upload size={16}/> Open model<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f) }}/></label></div>}<div className="status">{busy ? 'Working… ' : ''}{status}</div></section>
       <aside className="inspector"><div className="panelTitle"><Paintbrush size={16}/> Inspector</div>{selected != null && chosen() ? <><div className="selectedLabel">{selectedIds.size > 1 ? `${selectedIds.size} layers selected · editing primary: ${chosen()?.name}` : chosen()?.name}</div><div className="actions"><button className="btn" onClick={() => toggleSelectedVisibility(false)}><EyeOff size={15}/> Hide selected</button><button className="btn" onClick={() => toggleSelectedVisibility(true)}><Eye size={15}/> Show selected</button><button className="btn danger" onClick={remove}><Trash2 size={15}/> Delete</button></div><label className="field">Base color<input type="color" value={color} onChange={e => updateColor(e.target.value)}/></label><label className="field">Roughness <span>{roughness.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={roughness} onChange={e => updateRoughness(Number(e.target.value))}/></label><label className="btn full"><Upload size={15}/> Replace base-color texture<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateTexture(f); e.target.value = '' }}/></label><p className="hint">Texture placement uses the selected mesh's original UV coordinates.</p></> : <p className="hint">Select a layer or click any visible part of the model.</p>}
