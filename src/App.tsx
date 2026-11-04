@@ -3,7 +3,7 @@ import { Engine, Scene, ArcRotateCamera, Vector3, Color3, Color4, HemisphericLig
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader'
 import '@babylonjs/loaders/glTF'
 import { GLTF2Export } from '@babylonjs/serializers/glTF'
-import { Upload, Eye, EyeOff, Trash2, Download, Layers, Paintbrush, RotateCcw, Box, ChevronRight, ChevronDown, Share2, Copy, Clock, ExternalLink } from 'lucide-react'
+import { Upload, Eye, EyeOff, Trash2, Download, Layers, Paintbrush, RotateCcw, Box, ChevronRight, ChevronDown, Share2, Copy, Clock, ExternalLink, Search, X } from 'lucide-react'
 import './styles.css'
 
 type Item = { id: number; name: string; depth: number; visible: boolean; hasMesh: boolean; parentId: number | null }
@@ -33,6 +33,7 @@ function EditorApp() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const selectedIdsRef = useRef<Set<number>>(new Set())
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
+  const [layerSearch, setLayerSearch] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('Upload a GLB model to begin')
   const [filename, setFilename] = useState('')
@@ -45,6 +46,45 @@ function EditorApp() {
   const [shareExpiry, setShareExpiry] = useState<number | null>(null)
   const [shareRemaining, setShareRemaining] = useState('')
   
+
+
+  // Case-insensitive, accent-insensitive, multi-term layer search.
+  const normalizeLayerText = (value: string) => value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+  const searchTerms = normalizeLayerText(layerSearch).split(/\s+/).filter(Boolean)
+  const matchingLayerIds = new Set(
+    searchTerms.length
+      ? items.filter(item => {
+          const name = normalizeLayerText(item.name)
+          return searchTerms.every(term => name.includes(term))
+        }).map(item => item.id)
+      : items.map(item => item.id)
+  )
+  const displayedLayerIds = new Set(matchingLayerIds)
+  if (searchTerms.length) {
+    for (const item of items) {
+      if (!matchingLayerIds.has(item.id)) continue
+      let parentId = item.parentId
+      while (parentId != null) {
+        displayedLayerIds.add(parentId)
+        parentId = items.find(candidate => candidate.id === parentId)?.parentId ?? null
+      }
+    }
+  }
+  const hideMatchingLayers = () => {
+    const ed = editorRef.current
+    if (!ed || !searchTerms.length || matchingLayerIds.size === 0) return
+    for (const id of matchingLayerIds) {
+      const node = ed.nodes.get(id)
+      if (node) setNodeVisible(node, false)
+    }
+    refresh()
+    setStatus(`Hidden ${matchingLayerIds.size} matching layer${matchingLayerIds.size === 1 ? '' : 's'}`)
+  }
 
   const refresh = () => {
     const ed = editorRef.current
@@ -282,7 +322,11 @@ function EditorApp() {
   const renderItem = (item: Item) => {
     const hasChildren = items.some(n => n.parentId === item.id)
     let p = item.parentId, shown = true
-    while (p != null) { if (!expanded.has(p)) { shown = false; break }; p = items.find(n => n.id === p)?.parentId ?? null }
+    if (searchTerms.length) {
+      shown = displayedLayerIds.has(item.id)
+    } else {
+      while (p != null) { if (!expanded.has(p)) { shown = false; break }; p = items.find(n => n.id === p)?.parentId ?? null }
+    }
     if (!shown) return null
     return <div className={`layer ${selectedIds.has(item.id) ? 'active' : ''}`} key={item.id} style={{ paddingLeft: 12 + item.depth * 17 }}>
       <button className="chevron" onClick={() => { setExpanded(prev => { const n = new Set(prev); n.has(item.id) ? n.delete(item.id) : n.add(item.id); return n }) }}>
@@ -307,7 +351,14 @@ function EditorApp() {
   return <div className="app">
     <header className="topbar"><div className="brand"><span className="logo"><Box size={21}/></span><div><strong>MOBICA</strong><small>3D MATERIAL STUDIO</small></div></div>
       <div className="toolbar"><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><button className="btn" onClick={exportGLB} disabled={!filename || busy}><Download size={16}/> Export GLB</button><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
-    <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size}><EyeOff size={14}/> Hide selected</button></div><p className="hint">Ctrl/Cmd-click layers to select multiple. Use Show all to restore every hidden object.</p><p className="hint">Click a cabinet door in the model or select its layer here. Hide it to reveal the interior.</p><div className="layers">{items.length ? items.map(renderItem) : <div className="empty">No model loaded</div>}</div></aside>
+    <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size}><EyeOff size={14}/> Hide selected</button></div>
+      <div className="layerSearch">
+        <Search size={15}/>
+        <input aria-label="Search layers" type="search" value={layerSearch} onChange={e => setLayerSearch(e.target.value)} placeholder="Search layers…" />
+        {layerSearch && <button className="searchClear" aria-label="Clear layer search" title="Clear search" onClick={() => setLayerSearch('')}><X size={14}/></button>}
+      </div>
+      {searchTerms.length > 0 && <div className="searchSummary">{matchingLayerIds.size} matching layer{matchingLayerIds.size === 1 ? '' : 's'}{matchingLayerIds.size > 0 && <button className="btn searchHide" onClick={hideMatchingLayers}><EyeOff size={13}/> Hide all matches</button>}</div>}
+      <p className="hint">Ctrl/Cmd-click layers to select multiple. Use Show all to restore every hidden object.</p><p className="hint">Click a cabinet door in the model or select its layer here. Hide it to reveal the interior.</p><div className="layers">{items.length ? (searchTerms.length && matchingLayerIds.size === 0 ? <div className="empty">No layers match “{layerSearch}”</div> : items.map(renderItem)) : <div className="empty">No model loaded</div>}</div></aside>
       <section className="viewport"><canvas ref={canvasRef}/><div className="viewportBadge">BABYLON.JS · PBR RENDERER</div>{!filename && <div className="welcome"><Box size={42}/><h2>Furniture model viewer</h2><p>Upload a GLB to inspect materials and hide cabinet doors, shelves or drawers.</p><label className="btn primary"><Upload size={16}/> Open model<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f) }}/></label></div>}<div className="status">{busy ? 'Working… ' : ''}{status}</div></section>
       <aside className="inspector"><div className="panelTitle"><Paintbrush size={16}/> Inspector</div>{selected != null && chosen() ? <><div className="selectedLabel">{selectedIds.size > 1 ? `${selectedIds.size} layers selected · editing primary: ${chosen()?.name}` : chosen()?.name}</div><div className="actions"><button className="btn" onClick={() => toggleSelectedVisibility(false)}><EyeOff size={15}/> Hide selected</button><button className="btn" onClick={() => toggleSelectedVisibility(true)}><Eye size={15}/> Show selected</button><button className="btn danger" onClick={remove}><Trash2 size={15}/> Delete</button></div><label className="field">Base color<input type="color" value={color} onChange={e => updateColor(e.target.value)}/></label><label className="field">Roughness <span>{roughness.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={roughness} onChange={e => updateRoughness(Number(e.target.value))}/></label><label className="btn full"><Upload size={15}/> Replace base-color texture<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateTexture(f); e.target.value = '' }}/></label><p className="hint">Texture placement uses the selected mesh's original UV coordinates.</p></> : <p className="hint">Select a layer or click any visible part of the model.</p>}
       <div className="separator"/><div className="panelTitle">Lighting & quality</div><label className="field">Brightness <span>{exposure.toFixed(2)}×</span><input aria-label="Brightness" type="range" min="0.35" max="1.8" step="0.05" value={exposure} onChange={e => { const n = Number(e.target.value); setExposure(n); if (editorRef.current) editorRef.current.scene.imageProcessingConfiguration.exposure = n }}/></label><label className="field">Environment light <span>{environment.toFixed(2)}</span><input aria-label="Environment light" type="range" min="0" max="1.2" step="0.02" value={environment} onChange={e => { const n = Number(e.target.value); setEnvironment(n); if (editorRef.current) editorRef.current.scene.environmentIntensity = n }}/></label><label className="field">Render quality <span>{quality}%</span><input aria-label="Render quality" type="range" min="25" max="100" step="5" value={quality} onChange={e => updateQuality(Number(e.target.value))}/></label><p className="hint">Higher quality increases internal render resolution and texture filtering. It may use more GPU memory and reduce frame rate on slower devices.</p><button className="btn full" onClick={() => { setExposure(1); setEnvironment(0.32); updateQuality(75); if (editorRef.current) { editorRef.current.scene.imageProcessingConfiguration.exposure = 1; editorRef.current.scene.environmentIntensity = 0.32 } }}><RotateCcw size={14}/> Reset lighting & quality</button><p className="hint">Adjust brightness independently from environment reflections and render quality.</p></aside></main>
