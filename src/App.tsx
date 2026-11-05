@@ -25,6 +25,7 @@ function findMeshes(node: Node): AbstractMesh[] { return descendants(node).filte
 
 function EditorApp() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const uploadInputRef = useRef<HTMLInputElement>(null)
   const editorRef = useRef<Editor | null>(null)
   const engineRef = useRef<Engine | null>(null)
   const modelRef = useRef<{ roots: Node[]; fileName: string; hiddenIds: Set<number>; deletedIds: Set<number> } | null>(null)
@@ -51,6 +52,15 @@ function EditorApp() {
   const redoStackRef = useRef<ModelSnapshot[]>([])
   
 
+
+  useEffect(() => {
+    const handleWelcomeUpload = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return
+      if (event.data?.type === 'MOBICA_UPLOAD_MODEL') uploadInputRef.current?.click()
+    }
+    window.addEventListener('message', handleWelcomeUpload)
+    return () => window.removeEventListener('message', handleWelcomeUpload)
+  }, [])
 
   const captureSnapshot = (): ModelSnapshot => ({
     hiddenIds: new Set(modelRef.current?.hiddenIds ?? []),
@@ -496,8 +506,8 @@ function EditorApp() {
   }, [shareExpiry])
 
   return <div className="app">
-    <header className="topbar"><div className="brand"><span className="brandLogoWrap"><img className="brandLogo" src="/mobica-logo.webp" alt="Mobica logo"/></span><div><strong>MOBICA</strong><small>3D MATERIAL STUDIO</small></div></div>
-      <div className="toolbar"><button className="btn historyBtn" onClick={undo} disabled={!undoCount || busy} title="Undo (last 10 hide/delete actions)"><Undo2 size={15}/> Undo</button><button className="btn historyBtn" onClick={redo} disabled={!redoCount || busy} title="Redo"><Redo2 size={15}/> Redo</button><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><button className="btn" onClick={exportGLB} disabled={!filename || busy}><Download size={16}/> Export GLB</button><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
+    <header className="topbar"><div className="brand"><span className="brandMark"><Box size={27} strokeWidth={1.8}/></span><div><strong>MOBICA</strong><small>3D MATERIAL STUDIO</small></div></div>
+      <div className="toolbar"><button className="btn historyBtn" onClick={undo} disabled={!undoCount || busy} title="Undo (last 10 hide/delete actions)"><Undo2 size={15}/> Undo</button><button className="btn historyBtn" onClick={redo} disabled={!redoCount || busy} title="Redo"><Redo2 size={15}/> Redo</button><label className="btn primary"><Upload size={16}/> Upload GLB<input ref={uploadInputRef} type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><button className="btn" onClick={exportGLB} disabled={!filename || busy}><Download size={16}/> Export GLB</button><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
     <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size}><EyeOff size={14}/> Hide selected</button></div>
       <div className="layerSearch">
         <Search size={15}/>
@@ -517,6 +527,7 @@ function EditorApp() {
 type ShareInfo = { filename: string; expiresAt: number; visibleUrl: string; fullUrl: string }
 function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const uploadInputRef = useRef<HTMLInputElement>(null)
   const [info, setInfo] = useState<ShareInfo | null>(null)
   const [error, setError] = useState('')
   const [remaining, setRemaining] = useState('')
@@ -669,7 +680,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
 
   return <div className="sharedPage">
     <header className="sharedHeader">
-      <div className="brand"><span className="brandLogoWrap"><img className="brandLogo" src="/mobica-logo.webp" alt="Mobica logo"/></span><div><strong>MOBICA</strong><small>3D MODEL PREVIEW</small></div></div>
+      <div className="brand"><span className="brandMark"><Box size={27} strokeWidth={1.8}/></span><div><strong>MOBICA</strong><small>3D MODEL PREVIEW</small></div></div>
       <div className="sharedTabs">
         <button className={activeTab === 'full' ? 'active' : ''} onClick={() => setActiveTab('full')} disabled={!previewReady}>Full model</button>
         <button className={activeTab === 'visible' ? 'active' : ''} onClick={() => setActiveTab('visible')} disabled={!previewReady}>Visible only</button>

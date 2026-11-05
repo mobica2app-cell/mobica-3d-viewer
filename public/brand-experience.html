@@ -67,6 +67,17 @@
             -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.08);
         }
+        .upload-model-btn {
+            display:flex;align-items:center;gap:12px;padding:15px 24px;
+            border-radius:16px;border:1px solid rgba(255,255,255,.55);
+            background:linear-gradient(135deg,#10ac84,#087f70);
+            color:#fff;font-size:13px;font-weight:800;letter-spacing:.02em;
+            box-shadow:0 14px 40px rgba(16,172,132,.28), inset 0 1px 0 rgba(255,255,255,.25);
+            transition:transform .2s ease, box-shadow .2s ease;
+            white-space:nowrap;
+        }
+        .upload-model-btn:hover { transform:translateY(-3px);box-shadow:0 18px 48px rgba(16,172,132,.38); }
+        .upload-model-btn i { font-size:18px; }
         /* Custom scrollbar */
         ::-webkit-scrollbar {
             width: 6px;
@@ -346,30 +357,24 @@
         }
 
         // Generate 3D Text Geometry using Canvas Texture or Canvas Extrusion
-        function create3DText(text, isDark) {
-            const canvas = document.createElement('canvas');
-            canvas.width = 1024;
-            canvas.height = 300;
-            const ctx = canvas.getContext('2d');
-
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.fillStyle = isDark ? '#ffffff' : '#1e293b';
-            ctx.font = '900 180px Inter, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(text, canvas.width / 2, canvas.height / 2);
-
-            const texture = new THREE.CanvasTexture(canvas);
-            texture.minFilter = THREE.LinearFilter;
-            
-            const planeGeo = new THREE.PlaneGeometry(8, 2.34);
-            const planeMat = new THREE.MeshBasicMaterial({
-                map: texture,
-                transparent: true,
-                side: THREE.DoubleSide
+        function createBrandIcon() {
+            const icon = new THREE.Group();
+            const darkMaterial = new THREE.MeshStandardMaterial({ color: 0x263746, metalness: 0.48, roughness: 0.24 });
+            const accentMaterial = new THREE.MeshStandardMaterial({ color: 0x10ac84, metalness: 0.38, roughness: 0.22 });
+            [
+                { x: -0.62, y: 0.18, material: darkMaterial },
+                { x: 0.12, y: 0.18, material: accentMaterial },
+                { x: 0.12, y: -0.55, material: darkMaterial }
+            ].forEach(({ x, y, material }) => {
+                const cube = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.72, 0.72), material);
+                cube.position.set(x, y, 0);
+                cube.rotation.set(0.18, 0.28, 0.12);
+                cube.castShadow = true;
+                cube.receiveShadow = true;
+                icon.add(cube);
             });
-
-            return new THREE.Mesh(planeGeo, planeMat);
+            icon.scale.setScalar(1.18);
+            return icon;
         }
 
         // Studio Environment & Lighting Setup
@@ -448,11 +453,11 @@
             logoContainer = new THREE.Group();
             scene.add(logoContainer);
 
-            // Create Mobica Text Header
+            // Create a compact 3D geometric brand icon instead of a wordmark
             textGroup = new THREE.Group();
-            textGroup.position.set(0, 1.2, 0);
+            textGroup.position.set(0, 0.35, 0);
+            textGroup.add(createBrandIcon());
             logoContainer.add(textGroup);
-            updateTextModel(false);
 
             // Create 3D Shapes Group
             shapesGroup = new THREE.Group();
@@ -470,11 +475,8 @@
             animate();
         }
 
-        let textMesh = null;
-        function updateTextModel(isDark) {
-            if (textMesh) textGroup.remove(textMesh);
-            textMesh = create3DText("mobica.", isDark);
-            textGroup.add(textMesh);
+        function updateTextModel() {
+            // The geometric brand icon replaces the old 3D wordmark.
         }
 
         function buildShapes() {
@@ -731,6 +733,11 @@
         // --- DOM UI CONTROLS BINDING ---
         window.onload = function() {
             initScene();
+
+            // Open the editor's GLB picker from the welcome experience.
+            document.getElementById('upload-model-btn').addEventListener('click', () => {
+                window.parent.postMessage({ type: 'MOBICA_UPLOAD_MODEL' }, window.location.origin);
+            });
 
             // Layout Button Listeners
             document.querySelectorAll('.layout-btn').forEach(btn => {
