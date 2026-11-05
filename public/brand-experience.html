@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mobica - 3D Brand Experience</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        mobica: {
+                            red: '#e63946',
+                            yellow: '#ffb703',
+                            green: '#2a9d8f',
+                            purple: '#6a4c93',
+                            blue: '#8ecae6',
+                            dark: '#1d3557',
+                            text: '#222222'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif']
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Google Fonts & Font Awesome Icons -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Three.js and OrbitControls -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- GSAP for smooth animations -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            overflow: hidden;
+            user-select: none;
+        }
+        #webgl-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+        }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.75);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+        }
+        .dark .glass-panel {
+            background: rgba(18, 18, 24, 0.75);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(150, 150, 150, 0.3);
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100 h-full transition-colors duration-500">
+
+    <!-- 3D Canvas -->
+    <canvas id="webgl-canvas"></canvas>
+
+    <!-- Overlay UI Layer -->
+    <div class="relative z-20 pointer-events-none w-full h-full flex flex-col justify-between p-6 sm:p-10">
+        
+        <!-- Header Controls -->
+        <header class="flex justify-between items-center w-full">
+            <div class="pointer-events-auto flex items-center space-x-3">
+                <span class="text-xs font-semibold tracking-widest uppercase px-3 py-1 rounded-full bg-slate-900/10 dark:bg-white/10 text-slate-700 dark:text-slate-300">
+                    Interactive 3D Experience
+                </span>
+            </div>
+
+            <!-- Top Right Action Toolbar -->
+            <div class="pointer-events-auto flex items-center space-x-3">
+                <button id="theme-toggle" class="glass-panel p-3 rounded-full hover:scale-105 active:scale-95 transition-all shadow-md text-slate-700 dark:text-slate-200" title="Toggle Dark/Light Mode">
+                    <i class="fa-solid fa-moon dark:hidden text-lg"></i>
+                    <i class="fa-solid fa-sun hidden dark:block text-lg"></i>
+                </button>
+                <button id="reset-cam" class="glass-panel p-3 rounded-full hover:scale-105 active:scale-95 transition-all shadow-md text-slate-700 dark:text-slate-200" title="Reset Camera View">
+                    <i class="fa-solid fa-rotate-left text-lg"></i>
+                </button>
+                <button id="info-toggle" class="glass-panel p-3 rounded-full hover:scale-105 active:scale-95 transition-all shadow-md text-slate-700 dark:text-slate-200" title="About Mobica">
+                    <i class="fa-solid fa-circle-info text-lg"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Dynamic Hover / Selected Object Tooltip -->
+        <div id="shape-tooltip" class="pointer-events-none absolute left-1/2 top-1/3 -translate-x-1/2 -translate-y-1/2 opacity-0 transition-opacity duration-300 glass-panel px-6 py-3 rounded-2xl shadow-xl flex items-center space-x-3 border border-white/20">
+            <div id="tooltip-color-dot" class="w-4 h-4 rounded-full shadow-inner"></div>
+            <div>
+                <h4 id="tooltip-title" class="font-bold text-sm tracking-wide">Shape Name</h4>
+                <p id="tooltip-desc" class="text-xs text-slate-500 dark:text-slate-400">Click to focus</p>
+            </div>
+        </div>
+
+        <!-- Bottom Controls & Interaction Bar -->
+        <footer class="flex flex-col md:flex-row justify-between items-end md:items-center gap-4 w-full">
+            
+            <!-- Mode Selector Switcher -->
+            <div class="pointer-events-auto glass-panel p-1.5 rounded-2xl shadow-lg flex items-center space-x-1 self-center md:self-auto">
+                <button data-layout="linear" class="layout-btn active px-4 py-2 rounded-xl text-xs font-semibold transition-all bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm">
+                    <i class="fa-solid fa-equals mr-1.5"></i> Logo Alignment
+                </button>
+                <button data-layout="orbit" class="layout-btn px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all">
+                    <i class="fa-solid fa-circle-notch mr-1.5"></i> Solar Orbit
+                </button>
+                <button data-layout="chaos" class="layout-btn px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all">
+                    <i class="fa-solid fa-cubes-stacked mr-1.5"></i> Floating Zero-G
+                </button>
+            </div>
+
+            <!-- Action Controls -->
+            <div class="pointer-events-auto flex items-center space-x-3 self-center md:self-auto">
+                <button id="pulse-btn" class="glass-panel px-4 py-2.5 rounded-xl text-xs font-semibold hover:bg-slate-900 hover:text-white dark:hover:bg-white dark:hover:text-slate-900 transition-all shadow-md flex items-center space-x-2">
+                    <i class="fa-solid fa-bolt text-amber-500"></i>
+                    <span>Scatter Physics</span>
+                </button>
+                <button id="toggle-spin" class="glass-panel px-4 py-2.5 rounded-xl text-xs font-semibold hover:bg-slate-900 hover:text-white dark:hover:bg-white dark:hover:text-slate-900 transition-all shadow-md flex items-center space-x-2">
+                    <i class="fa-solid fa-arrows-spin text-emerald-500"></i>
+                    <span id="spin-btn-text">Pause Rotation</span>
+                </button>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Info Modal -->
+    <div id="info-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-md opacity-0 pointer-events-none transition-opacity duration-300">
+        <div class="glass-panel max-w-md w-full p-6 sm:p-8 rounded-3xl shadow-2xl relative border border-white/20 transform scale-95 transition-transform duration-300 id-modal-content">
+            <button id="close-modal" class="absolute top-5 right-5 text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+            <div class="flex items-center space-x-3 mb-4">
+                <div class="w-10 h-10 rounded-xl bg-slate-900 text-white dark:bg-white dark:text-slate-900 font-extrabold flex items-center justify-center text-xl">
+                    m.
+                </div>
+                <div>
+                    <h3 class="text-xl font-extrabold tracking-tight">Mobica 3D Identity</h3>
+                    <p class="text-xs text-slate-500 dark:text-slate-400">Design & Architecture Space</p>
+                </div>
+            </div>
+            <p class="text-sm text-slate-600 dark:text-slate-300 leading-relaxed mb-4">
+                Mobica is a pioneer in workspace solutions, interior architecture, and contemporary design. This interactive 3D visual showcase renders the brand's iconic geometric sequence in real-time WebGL space.
+            </p>
+            <div class="space-y-2 text-xs text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-900/60 p-4 rounded-xl mb-6">
+                <div class="flex justify-between"><span>Rotate View:</span> <strong class="text-slate-700 dark:text-slate-200">Left Click + Drag</strong></div>
+                <div class="flex justify-between"><span>Pan Camera:</span> <strong class="text-slate-700 dark:text-slate-200">Right Click + Drag</strong></div>
+                <div class="flex justify-between"><span>Zoom:</span> <strong class="text-slate-700 dark:text-slate-200">Scroll Wheel</strong></div>
+                <div class="flex justify-between"><span>Interact Shapes:</span> <strong class="text-slate-700 dark:text-slate-200">Hover & Left Click</strong></div>
+            </div>
+            <button id="close-modal-btn" class="w-full py-3 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-bold uppercase tracking-wider hover:opacity-90 transition-opacity">
+                Explore 3D Canvas
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Logic Script -->
+    <script>
+        // --- Theme Management ---
+        const htmlElement = document.documentElement;
+        let isDarkMode = false;
+
+        function setTheme(dark) {
+            isDarkMode = dark;
+            if (dark) {
+                htmlElement.classList.add('dark');
+            } else {
+                htmlElement.classList.remove('dark');
+            }
+            if (window.updateSceneColors) {
+                window.updateSceneColors(dark);
+            }
+        }
+
+        document.getElementById('theme-toggle').addEventListener('click', () => {
+            setTheme(!htmlElement.classList.contains('dark'));
+        });
+
+        // Modal Controls
+        const infoModal = document.getElementById('info-modal');
+        const modalContent = infoModal.querySelector('.id-modal-content');
+        
+        function openModal() {
+            infoModal.classList.remove('pointer-events-none', 'opacity-0');
+            modalContent.classList.remove('scale-95');
+            modalContent.classList.add('scale-100');
+        }
+        function closeModal() {
+            infoModal.classList.add('opacity-0', 'pointer-events-none');
+            modalContent.classList.remove('scale-100');
+            modalContent.classList.add('scale-95');
+        }
+
+        document.getElementById('info-toggle').addEventListener('click', openModal);
+        document.getElementById('close-modal').addEventListener('click', closeModal);
+        document.getElementById('close-modal-btn').addEventListener('click', closeModal);
+        infoModal.addEventListener('click', (e) => {
+            if (e.target === infoModal) closeModal();
+        });
+
+        // --- THREE.JS APPLICATION ---
+        let scene, camera, renderer, controls;
+        let shapesGroup, textGroup, logoContainer;
+        let shapes = [];
+        let raycaster, mouse;
+        let hoveredObject = null;
+        let selectedObject = null;
+        let autoRotateActive = true;
+        let currentLayout = 'linear'; // 'linear', 'orbit', 'chaos'
+
+        // Brand Colors Mapping
+        const MOBICA_COLORS = {
+            red: 0xed2939,       // Red Pentagon
+            yellow: 0xffb703,    // Yellow Triangle/Tetrahedron
+            green: 0x10ac84,     // Green Cube
+            purple: 0x5f27cd,    // Purple Sphere
+            blue: 0x54a0ff,      // Light Blue Hexagon
+            dark: 0x222f3e,      // Dark Plus Sign
+            textDark: 0x1e293b,
+            textLight: 0xf8fafc,
+            bgLight: 0xf8fafc,
+            bgDark: 0x090d16
+        };
+
+        const SHAPE_CONFIGS = [
+            { id: 'pentagon', name: 'Pentagon Prism', color: MOBICA_COLORS.red, desc: 'Creative Foundation' },
+            { id: 'triangle', name: 'Tetrahedron', color: MOBICA_COLORS.yellow, desc: 'Structural Dynamics' },
+            { id: 'cube', name: 'Precision Cube', color: MOBICA_COLORS.green, desc: 'Space Optimization' },
+            { id: 'sphere', name: 'Perfect Sphere', color: MOBICA_COLORS.purple, desc: 'Fluid Comfort' },
+            { id: 'hexagon', name: 'Hexagonal Prism', color: MOBICA_COLORS.blue, desc: 'Architectural Harmony' },
+            { id: 'plus', name: 'Cross Vector', color: MOBICA_COLORS.dark, desc: 'Modular Integration' }
+        ];
+
+        // Geometric Builders
+        function createPentagonMesh(color) {
+            const shape = new THREE.Shape();
+            const sides = 5;
+            const radius = 0.55;
+            for (let i = 0; i < sides; i++) {
+                const angle = (i / sides) * Math.PI * 2 - Math.PI / 2;
+                const x = radius * Math.cos(angle);
+                const y = radius * Math.sin(angle);
+                if (i === 0) shape.moveTo(x, y);
+                else shape.lineTo(x, y);
+            }
+            shape.closePath();
+
+            const extrudeSettings = { depth: 0.35, bevelEnabled: true, bevelSegments: 4, steps: 1, bevelSize: 0.04, bevelThickness: 0.04 };
+            const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+            geometry.center();
+            return new THREE.Mesh(geometry, createMaterial(color));
+        }
+
+        function createTetrahedronMesh(color) {
+            // High detail extruded shape or regular tetrahedron with beveling
+            const geometry = new THREE.TetrahedronGeometry(0.7, 0);
+            return new THREE.Mesh(geometry, createMaterial(color));
+        }
+
+        function createCubeMesh(color) {
+            const geometry = new THREE.BoxGeometry(0.85, 0.85, 0.85);
+            return new THREE.Mesh(geometry, createMaterial(color));
+        }
+
+        function createSphereMesh(color) {
+            const geometry = new THREE.SphereGeometry(0.52, 32, 32);
+            return new THREE.Mesh(geometry, createMaterial(color));
+        }
+
+        function createHexagonMesh(color) {
+            const shape = new THREE.Shape();
+            const sides = 6;
+            const radius = 0.55;
+            for (let i = 0; i < sides; i++) {
+                const angle = (i / sides) * Math.PI * 2 - Math.PI / 6;
+                const x = radius * Math.cos(angle);
+                const y = radius * Math.sin(angle);
+                if (i === 0) shape.moveTo(x, y);
+                else shape.lineTo(x, y);
+            }
+            shape.closePath();
+
+            const extrudeSettings = { depth: 0.35, bevelEnabled: true, bevelSegments: 4, steps: 1, bevelSize: 0.04, bevelThickness: 0.04 };
+            const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+            geometry.center();
+            return new THREE.Mesh(geometry, createMaterial(color));
+        }
+
+        function createPlusMesh(color) {
+            const shape = new THREE.Shape();
+            const w = 0.18;
+            const l = 0.5;
+            
+            shape.moveTo(-w, l);
+            shape.lineTo(w, l);
+            shape.lineTo(w, w);
+            shape.lineTo(l, w);
+            shape.lineTo(l, -w);
+            shape.lineTo(w, -w);
+            shape.lineTo(w, -l);
+            shape.lineTo(-w, -l);
+            shape.lineTo(-w, -w);
+            shape.lineTo(-l, -w);
+            shape.lineTo(-l, w);
+            shape.lineTo(-w, w);
+            shape.closePath();
+
+            const extrudeSettings = { depth: 0.35, bevelEnabled: true, bevelSegments: 3, steps: 1, bevelSize: 0.03, bevelThickness: 0.03 };
+            const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+            geometry.center();
+            return new THREE.Mesh(geometry, createMaterial(color));
+        }
+
+        function createMaterial(color) {
+            return new THREE.MeshPhysicalMaterial({
+                color: color,
+                roughness: 0.25,
+                metalness: 0.1,
+                clearcoat: 0.4,
+                clearcoatRoughness: 0.2,
+                reflectivity: 0.8
+            });
+        }
+
+        // Generate 3D Text Geometry using Canvas Texture or Canvas Extrusion
+        function create3DText(text, isDark) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1024;
+            canvas.height = 300;
+            const ctx = canvas.getContext('2d');
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = isDark ? '#ffffff' : '#1e293b';
+            ctx.font = '900 180px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.minFilter = THREE.LinearFilter;
+            
+            const planeGeo = new THREE.PlaneGeometry(8, 2.34);
+            const planeMat = new THREE.MeshBasicMaterial({
+                map: texture,
+                transparent: true,
+                side: THREE.DoubleSide
+            });
+
+            return new THREE.Mesh(planeGeo, planeMat);
+        }
+
+        // Studio Environment & Lighting Setup
+        let dirLight, ambientLight, floorMesh, gridHelper;
+
+        function initScene() {
+            const container = document.getElementById('webgl-canvas');
+            
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(MOBICA_COLORS.bgLight);
+            scene.fog = new THREE.FogExp2(MOBICA_COLORS.bgLight, 0.035);
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 0.5, 11);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ canvas: container, antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.1;
+
+            // Controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.maxDistance = 20;
+            controls.minDistance = 4;
+            controls.maxPolarAngle = Math.PI / 2 + 0.05; // Slightly below ground level
+
+            // Raycaster
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+
+            // Lights
+            ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
+            scene.add(ambientLight);
+
+            dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
+            dirLight.position.set(5, 10, 7);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
+            dirLight.shadow.camera.near = 0.5;
+            dirLight.shadow.camera.far = 25;
+            dirLight.shadow.camera.left = -8;
+            dirLight.shadow.camera.right = 8;
+            dirLight.shadow.camera.top = 8;
+            dirLight.shadow.camera.bottom = -8;
+            dirLight.shadow.bias = -0.0005;
+            scene.add(dirLight);
+
+            const fillLight = new THREE.DirectionalLight(0x8ecae6, 0.5);
+            fillLight.position.set(-6, 3, -4);
+            scene.add(fillLight);
+
+            // Studio Floor Shadow Receiver
+            const floorGeo = new THREE.PlaneGeometry(50, 50);
+            const floorMat = new THREE.ShadowMaterial({ opacity: 0.12 });
+            floorMesh = new THREE.Mesh(floorGeo, floorMat);
+            floorMesh.rotation.x = -Math.PI / 2;
+            floorMesh.position.y = -2.8;
+            floorMesh.receiveShadow = true;
+            scene.add(floorMesh);
+
+            // Subtle Floor Grid
+            gridHelper = new THREE.GridHelper(30, 40, 0xcbd5e1, 0xe2e8f0);
+            gridHelper.position.y = -2.81;
+            scene.add(gridHelper);
+
+            // Main Hierarchy Group
+            logoContainer = new THREE.Group();
+            scene.add(logoContainer);
+
+            // Create Mobica Text Header
+            textGroup = new THREE.Group();
+            textGroup.position.set(0, 1.2, 0);
+            logoContainer.add(textGroup);
+            updateTextModel(false);
+
+            // Create 3D Shapes Group
+            shapesGroup = new THREE.Group();
+            shapesGroup.position.set(0, -1.1, 0);
+            logoContainer.add(shapesGroup);
+
+            buildShapes();
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('click', onClick);
+
+            // Start Animation Loop
+            animate();
+        }
+
+        let textMesh = null;
+        function updateTextModel(isDark) {
+            if (textMesh) textGroup.remove(textMesh);
+            textMesh = create3DText("mobica.", isDark);
+            textGroup.add(textMesh);
+        }
+
+        function buildShapes() {
+            // Clear existing
+            shapes.forEach(s => shapesGroup.remove(s.mesh));
+            shapes = [];
+
+            const builders = [
+                createPentagonMesh,
+                createTetrahedronMesh,
+                createCubeMesh,
+                createSphereMesh,
+                createHexagonMesh,
+                createPlusMesh
+            ];
+
+            const totalWidth = 6.8;
+            const startX = -totalWidth / 2 + 0.6;
+            const step = totalWidth / (SHAPE_CONFIGS.length - 1);
+
+            SHAPE_CONFIGS.forEach((config, idx) => {
+                const mesh = builders[idx](config.color);
+                mesh.castShadow = true;
+                mesh.receiveShadow = true;
+
+                // Save initial home transforms
+                const homePos = new THREE.Vector3(startX + idx * step, 0, 0);
+                mesh.position.copy(homePos);
+
+                shapesGroup.add(mesh);
+
+                shapes.push({
+                    mesh: mesh,
+                    config: config,
+                    homePos: homePos,
+                    chaosPos: new THREE.Vector3(
+                        (Math.random() - 0.5) * 8,
+                        (Math.random() - 0.5) * 4 + 0.5,
+                        (Math.random() - 0.5) * 5
+                    ),
+                    orbitAngle: (idx / SHAPE_CONFIGS.length) * Math.PI * 2,
+                    rotSpeed: {
+                        x: (Math.random() - 0.5) * 0.015 + 0.005,
+                        y: (Math.random() - 0.5) * 0.015 + 0.008,
+                        z: (Math.random() - 0.5) * 0.01
+                    },
+                    floatOffset: Math.random() * Math.PI * 2,
+                    velocity: new THREE.Vector3(0, 0, 0)
+                });
+            });
+        }
+
+        // Layout Transitions
+        function updateLayout(layoutName) {
+            currentLayout = layoutName;
+            
+            shapes.forEach((item, idx) => {
+                let targetPos = new THREE.Vector3();
+
+                if (layoutName === 'linear') {
+                    targetPos.copy(item.homePos);
+                } else if (layoutName === 'chaos') {
+                    targetPos.copy(item.chaosPos);
+                } else if (layoutName === 'orbit') {
+                    const radius = 3.2;
+                    const angle = item.orbitAngle;
+                    targetPos.set(Math.cos(angle) * radius, Math.sin(angle) * 1.5, Math.sin(angle) * radius * 0.5);
+                }
+
+                gsap.to(item.mesh.position, {
+                    x: targetPos.x,
+                    y: targetPos.y,
+                    z: targetPos.z,
+                    duration: 1.4,
+                    ease: "power3.inOut"
+                });
+
+                // Subtle spin reset
+                gsap.to(item.mesh.rotation, {
+                    x: 0,
+                    y: 0,
+                    z: 0,
+                    duration: 1
+                });
+            });
+        }
+
+        // Theme Switcher Callback
+        window.updateSceneColors = function(isDark) {
+            const targetBg = isDark ? MOBICA_COLORS.bgDark : MOBICA_COLORS.bgLight;
+            const targetGrid = isDark ? 0x1e293b : 0xcbd5e1;
+            
+            gsap.to(scene.background, {
+                r: new THREE.Color(targetBg).r,
+                g: new THREE.Color(targetBg).g,
+                b: new THREE.Color(targetBg).b,
+                duration: 0.8
+            });
+            gsap.to(scene.fog, {
+                color: new THREE.Color(targetBg),
+                duration: 0.8
+            });
+
+            gridHelper.material.color.setHex(targetGrid);
+            gridHelper.material.subdivisionColor.setHex(isDark ? 0x0f172a : 0xe2e8f0);
+
+            // Re-render logo text color
+            updateTextModel(isDark);
+        };
+
+        // Window Resize
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Mouse Move Raycasting
+        const tooltip = document.getElementById('shape-tooltip');
+        const tooltipDot = document.getElementById('tooltip-color-dot');
+        const tooltipTitle = document.getElementById('tooltip-title');
+        const tooltipDesc = document.getElementById('tooltip-desc');
+
+        function onMouseMove(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(shapes.map(s => s.mesh));
+
+            if (intersects.length > 0) {
+                const object = intersects[0].object;
+                const found = shapes.find(s => s.mesh === object);
+
+                if (hoveredObject !== object) {
+                    if (hoveredObject) resetHover(hoveredObject);
+                    hoveredObject = object;
+                    document.body.style.cursor = 'pointer';
+
+                    // Hover Animation
+                    gsap.to(object.scale, { x: 1.25, y: 1.25, z: 1.25, duration: 0.3, ease: "back.out(1.7)" });
+
+                    // Show Tooltip
+                    if (found) {
+                        tooltipDot.style.backgroundColor = '#' + found.config.color.toString(16).padStart(6, '0');
+                        tooltipTitle.textContent = found.config.name;
+                        tooltipDesc.textContent = found.config.desc;
+                        tooltip.classList.remove('opacity-0');
+                    }
+                }
+            } else {
+                if (hoveredObject) {
+                    resetHover(hoveredObject);
+                    hoveredObject = null;
+                    document.body.style.cursor = 'default';
+                    tooltip.classList.add('opacity-0');
+                }
+            }
+        }
+
+        function resetHover(obj) {
+            gsap.to(obj.scale, { x: 1, y: 1, z: 1, duration: 0.3, ease: "power2.out" });
+        }
+
+        function onClick() {
+            if (hoveredObject) {
+                // Click Impulse / Bounce Animation
+                gsap.to(hoveredObject.rotation, {
+                    x: hoveredObject.rotation.x + Math.PI * 2,
+                    y: hoveredObject.rotation.y + Math.PI,
+                    duration: 0.8,
+                    ease: "power2.out"
+                });
+
+                gsap.to(hoveredObject.position, {
+                    y: hoveredObject.position.y + 0.6,
+                    yoyo: true,
+                    repeat: 1,
+                    duration: 0.35,
+                    ease: "power1.out"
+                });
+            }
+        }
+
+        // Scatter / Pulse Physics Effect
+        function triggerPulse() {
+            shapes.forEach(item => {
+                const burstX = (Math.random() - 0.5) * 3;
+                const burstY = (Math.random() - 0.5) * 2 + 1;
+                const burstZ = (Math.random() - 0.5) * 3;
+
+                gsap.to(item.mesh.position, {
+                    x: item.mesh.position.x + burstX,
+                    y: item.mesh.position.y + burstY,
+                    z: item.mesh.position.z + burstZ,
+                    duration: 0.5,
+                    ease: "power2.out",
+                    onComplete: () => {
+                        // Spring back to current layout position
+                        let home = item.homePos;
+                        if (currentLayout === 'chaos') home = item.chaosPos;
+                        
+                        gsap.to(item.mesh.position, {
+                            x: home.x,
+                            y: home.y,
+                            z: home.z,
+                            duration: 1.2,
+                            ease: "elastic.out(1, 0.4)"
+                        });
+                    }
+                });
+            });
+        }
+
+        // Animation Frame Loop
+        let clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const elapsedTime = clock.getElapsedTime();
+
+            // Continuous floating & continuous shape rotations
+            shapes.forEach((item, i) => {
+                if (autoRotateActive) {
+                    item.mesh.rotation.x += item.rotSpeed.x;
+                    item.mesh.rotation.y += item.rotSpeed.y;
+                    item.mesh.rotation.z += item.rotSpeed.z;
+                }
+
+                // Sine wave hover float effect
+                if (currentLayout === 'linear') {
+                    item.mesh.position.y = item.homePos.y + Math.sin(elapsedTime * 2 + item.floatOffset) * 0.12;
+                } else if (currentLayout === 'orbit') {
+                    item.orbitAngle += 0.005;
+                    const radius = 3.2;
+                    item.mesh.position.x = Math.cos(item.orbitAngle) * radius;
+                    item.mesh.position.z = Math.sin(item.orbitAngle) * radius * 0.6;
+                    item.mesh.position.y = Math.sin(elapsedTime * 1.5 + item.floatOffset) * 0.25;
+                } else if (currentLayout === 'chaos') {
+                    item.mesh.position.y += Math.sin(elapsedTime * 1.5 + item.floatOffset) * 0.003;
+                }
+            });
+
+            // Smooth subtle movement for text branding
+            if (textGroup) {
+                textGroup.position.y = 1.2 + Math.sin(elapsedTime * 1.2) * 0.04;
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // --- DOM UI CONTROLS BINDING ---
+        window.onload = function() {
+            initScene();
+
+            // Layout Button Listeners
+            document.querySelectorAll('.layout-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    document.querySelectorAll('.layout-btn').forEach(b => {
+                        b.classList.remove('bg-white', 'dark:bg-slate-800', 'text-slate-900', 'dark:text-white', 'shadow-sm');
+                        b.classList.add('text-slate-600', 'dark:text-slate-400');
+                    });
+                    const target = e.currentTarget;
+                    target.classList.add('bg-white', 'dark:bg-slate-800', 'text-slate-900', 'dark:text-white', 'shadow-sm');
+                    target.classList.remove('text-slate-600', 'dark:text-slate-400');
+
+                    const layout = target.getAttribute('data-layout');
+                    updateLayout(layout);
+                });
+            });
+
+            // Reset Camera View Button
+            document.getElementById('reset-cam').addEventListener('click', () => {
+                gsap.to(camera.position, { x: 0, y: 0.5, z: 11, duration: 1.2, ease: "power2.inOut" });
+                gsap.to(controls.target, { x: 0, y: 0, z: 0, duration: 1.2, ease: "power2.inOut" });
+            });
+
+            // Scatter Physics Button
+            document.getElementById('pulse-btn').addEventListener('click', triggerPulse);
+
+            // Toggle Spin Button
+            const spinBtn = document.getElementById('toggle-spin');
+            const spinBtnText = document.getElementById('spin-btn-text');
+            spinBtn.addEventListener('click', () => {
+                autoRotateActive = !autoRotateActive;
+                spinBtnText.textContent = autoRotateActive ? "Pause Rotation" : "Resume Rotation";
+            });
+        };
+    </script>
+</body>
+</html>
