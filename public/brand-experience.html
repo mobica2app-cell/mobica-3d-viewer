@@ -67,17 +67,6 @@
             -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.08);
         }
-        .upload-model-btn {
-            display:flex;align-items:center;gap:12px;padding:15px 24px;
-            border-radius:16px;border:1px solid rgba(255,255,255,.55);
-            background:linear-gradient(135deg,#10ac84,#087f70);
-            color:#fff;font-size:13px;font-weight:800;letter-spacing:.02em;
-            box-shadow:0 14px 40px rgba(16,172,132,.28), inset 0 1px 0 rgba(255,255,255,.25);
-            transition:transform .2s ease, box-shadow .2s ease;
-            white-space:nowrap;
-        }
-        .upload-model-btn:hover { transform:translateY(-3px);box-shadow:0 18px 48px rgba(16,172,132,.38); }
-        .upload-model-btn i { font-size:18px; }
         /* Custom scrollbar */
         ::-webkit-scrollbar {
             width: 6px;
@@ -129,6 +118,12 @@
         </div>
 
         <!-- Bottom Controls & Interaction Bar -->
+        <div class="pointer-events-auto absolute left-1/2 top-1/2 -translate-x-1/2 translate-y-16 z-30">
+            <button id="upload-model" class="px-7 py-4 rounded-2xl bg-slate-900 text-white dark:bg-white dark:text-slate-900 text-sm sm:text-base font-bold shadow-2xl hover:scale-105 active:scale-95 transition-all">
+                Click here to upload your 3D model
+            </button>
+        </div>
+
         <footer class="flex flex-col md:flex-row justify-between items-end md:items-center gap-4 w-full">
             
             <!-- Mode Selector Switcher -->
@@ -190,6 +185,10 @@
 
     <!-- Main Logic Script -->
     <script>
+        document.getElementById('upload-model').addEventListener('click', () => {
+            window.parent.postMessage({ type: 'MOBICA_UPLOAD_MODEL' }, '*');
+        });
+
         // --- Theme Management ---
         const htmlElement = document.documentElement;
         let isDarkMode = false;
@@ -234,7 +233,7 @@
 
         // --- THREE.JS APPLICATION ---
         let scene, camera, renderer, controls;
-        let shapesGroup, textGroup, logoContainer;
+        let shapesGroup, logoContainer;
         let shapes = [];
         let raycaster, mouse;
         let hoveredObject = null;
@@ -355,28 +354,6 @@
                 reflectivity: 0.8
             });
         }
-
-        // Generate 3D Text Geometry using Canvas Texture or Canvas Extrusion
-        function createBrandIcon() {
-            const icon = new THREE.Group();
-            const darkMaterial = new THREE.MeshStandardMaterial({ color: 0x263746, metalness: 0.48, roughness: 0.24 });
-            const accentMaterial = new THREE.MeshStandardMaterial({ color: 0x10ac84, metalness: 0.38, roughness: 0.22 });
-            [
-                { x: -0.62, y: 0.18, material: darkMaterial },
-                { x: 0.12, y: 0.18, material: accentMaterial },
-                { x: 0.12, y: -0.55, material: darkMaterial }
-            ].forEach(({ x, y, material }) => {
-                const cube = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.72, 0.72), material);
-                cube.position.set(x, y, 0);
-                cube.rotation.set(0.18, 0.28, 0.12);
-                cube.castShadow = true;
-                cube.receiveShadow = true;
-                icon.add(cube);
-            });
-            icon.scale.setScalar(1.18);
-            return icon;
-        }
-
         // Studio Environment & Lighting Setup
         let dirLight, ambientLight, floorMesh, gridHelper;
 
@@ -452,16 +429,9 @@
             // Main Hierarchy Group
             logoContainer = new THREE.Group();
             scene.add(logoContainer);
-
-            // Create a compact 3D geometric brand icon instead of a wordmark
-            textGroup = new THREE.Group();
-            textGroup.position.set(0, 0.35, 0);
-            textGroup.add(createBrandIcon());
-            logoContainer.add(textGroup);
-
-            // Create 3D Shapes Group
+// Create 3D Shapes Group
             shapesGroup = new THREE.Group();
-            shapesGroup.position.set(0, -1.1, 0);
+            shapesGroup.position.set(0, 0, 0);
             logoContainer.add(shapesGroup);
 
             buildShapes();
@@ -474,12 +444,7 @@
             // Start Animation Loop
             animate();
         }
-
-        function updateTextModel() {
-            // The geometric brand icon replaces the old 3D wordmark.
-        }
-
-        function buildShapes() {
+function buildShapes() {
             // Clear existing
             shapes.forEach(s => shapesGroup.remove(s.mesh));
             shapes = [];
@@ -582,9 +547,6 @@
 
             gridHelper.material.color.setHex(targetGrid);
             gridHelper.material.subdivisionColor.setHex(isDark ? 0x0f172a : 0xe2e8f0);
-
-            // Re-render logo text color
-            updateTextModel(isDark);
         };
 
         // Window Resize
@@ -721,11 +683,6 @@
                 }
             });
 
-            // Smooth subtle movement for text branding
-            if (textGroup) {
-                textGroup.position.y = 1.2 + Math.sin(elapsedTime * 1.2) * 0.04;
-            }
-
             controls.update();
             renderer.render(scene, camera);
         }
@@ -733,11 +690,6 @@
         // --- DOM UI CONTROLS BINDING ---
         window.onload = function() {
             initScene();
-
-            // Open the editor's GLB picker from the welcome experience.
-            document.getElementById('upload-model-btn').addEventListener('click', () => {
-                window.parent.postMessage({ type: 'MOBICA_UPLOAD_MODEL' }, window.location.origin);
-            });
 
             // Layout Button Listeners
             document.querySelectorAll('.layout-btn').forEach(btn => {

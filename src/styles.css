@@ -54,18 +54,19 @@
 .sharedTabs button:disabled{opacity:.45;cursor:wait}
 
 
-/* Geometric Mobica brand mark and interactive pre-upload welcome */
-.brandMark{
-  display:flex;align-items:center;justify-content:center;flex-shrink:0;
-  width:44px;height:44px;border-radius:12px;
-  color:#11b5a3;background:linear-gradient(145deg,#263746,#111a24);
-  border:1px solid #3a5960;box-shadow:0 5px 18px rgba(0,0,0,.2);
+/* Mobica brand identity and pre-upload interactive 3D welcome experience */
+.brandLogoWrap{
+  display:flex;align-items:center;justify-content:center;
+  width:76px;height:48px;padding:2px 5px;flex-shrink:0;
+  background:#fff;border:1px solid rgba(255,255,255,.72);
+  border-radius:9px;overflow:hidden;
 }
+.brandLogo{display:block;width:100%;height:100%;object-fit:contain}
 .brandExperienceFrame{
   position:absolute;inset:0;width:100%;height:100%;
   border:0;display:block;background:#f8fafc;z-index:2;
 }
 .viewportBadge,.viewport .status{z-index:3}
 @media(max-width:650px){
-  .brandMark{width:36px;height:36px}
+  .brandLogoWrap{width:58px;height:38px;padding:2px 4px}
 }
