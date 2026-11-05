@@ -70,3 +70,12 @@
 @media(max-width:650px){
   .brandLogoWrap{width:58px;height:38px;padding:2px 4px}
 }
+
+
+/* Additional non-destructive 3D editing tools */
+.editorSection{border-top:1px solid #34404d;margin-top:20px;padding-top:17px}
+.editorSectionTitle{font-size:12px;font-weight:750;color:#e5edf5;margin-bottom:12px}
+.toolModes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}
+.toolMode{display:flex;align-items:center;justify-content:center;gap:5px;min-width:0;padding:9px 4px;border:1px solid #39485a;border-radius:8px;background:#202c39;color:#b9c8d6;font-size:10px;font-weight:650}
+.toolMode:hover{background:#2c3d4e;color:#fff}
+.toolMode.active{background:#0d5b52;border-color:#16b8a5;color:#d9fff8}
