@@ -6,7 +6,7 @@ This version uses **Supabase only** for the sharing backend. Cloudflare R2, Work
 
 1. The editor exports the currently edited scene to a GLB. Hidden meshes are excluded and material/texture edits are baked into the exported GLB.
 2. The browser sends the GLB to the `share-model` Supabase Edge Function.
-3. The function stores the GLB in a **private** Storage bucket and inserts a record into PostgreSQL with a server-generated UUID and an expiry exactly 3 days after upload.
+3. The function stores the GLB in a **private** Storage bucket and inserts a record into PostgreSQL with a server-generated UUID and an expiry exactly 2 days after upload.
 4. The app creates `/share/<uuid>` on the editor's own domain.
 5. The read-only viewer asks the Edge Function for the link. The function checks expiry in PostgreSQL and returns a signed Storage URL that cannot outlive the share expiry.
 6. Expired links are denied. The optional scheduled cleanup function deletes expired files and rows hourly.
