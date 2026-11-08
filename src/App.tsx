@@ -150,7 +150,7 @@ function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, modelSize: Vec
   const cameraDirection = new Vector3(cameraPosition.x - modelCenter.x, 0, cameraPosition.z - modelCenter.z)
   if (cameraDirection.lengthSquared() > 1e-6) cameraDirection.normalize()
   const sideWalls = ed.cutawayWalls.filter(wall => !wall.ceiling).map(wall => ({ wall, score: Vector3.Dot(new Vector3(wall.center.x - modelCenter.x, 0, wall.center.z - modelCenter.z).normalize(), cameraDirection) })).sort((a, b) => b.score - a.score)
-  const selectedSides = new Set(sideWalls.slice(0, 2).map(item => item.wall))
+  const selectedSides = new Set(sideWalls.filter(item => item.score > 0.22).slice(0, 2).map(item => item.wall))
   const lookingFromAbove = cameraPosition.y > modelCenter.y + Math.max(modelSize.y * 0.38, 0.25)
   const targets = new Map<number, number>()
   for (const wall of ed.cutawayWalls) {
@@ -868,43 +868,17 @@ function EditorApp() {
     if (!supabaseUrl || !supabaseKey) { setStatus('Configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env'); return }
     setBusy(true); setStatus('Preparing two model versions for sharing…')
     const originalHidden = new Set(model.hiddenIds)
-    const originalMaterials = new Map<number, Material>()
     try {
-      // Version 1: export the complete model without the editor's visual cutaway.
+      // Version 1: all non-deleted layers, including layers currently hidden in the editor.
       model.hiddenIds.clear()
       applyModelState()
-      for (const [meshId, entry] of ed.cutawayMaterials) {
-        originalMaterials.set(meshId, entry.mesh.material as Material)
-        entry.mesh.material = entry.original
-      }
       setStatus('Compressing full model with Draco…')
       const fullBlob = await exportSceneBlob('mobica-full')
 
-      // Version 2: reproduce the studio camera cutaway in the exported GLB.
-      for (const [meshId, entry] of ed.cutawayMaterials) {
-        entry.mesh.material = entry.faded
-      }
+      // Version 2: only currently visible layers; deleted and hidden layers are omitted.
       model.hiddenIds = new Set(originalHidden)
       applyModelState()
-      if (ed.cutawayEnabled && ed.cutawayWalls.length) {
-        updateAutomaticCutaway(ed, ed.cutawayCenter, ed.cutawaySize)
-        // The editor fades smoothly; the share export must capture the final opacity,
-        // not an intermediate animation frame.
-        const cameraPosition = ed.camera.position
-        const cameraDirection = new Vector3(cameraPosition.x - ed.cutawayCenter.x, 0, cameraPosition.z - ed.cutawayCenter.z)
-        if (cameraDirection.lengthSquared() > 1e-6) cameraDirection.normalize()
-        const sideWalls = ed.cutawayWalls.filter(w => !w.ceiling).map(w => ({ wall: w, score: Vector3.Dot(new Vector3(w.center.x - ed.cutawayCenter.x, 0, w.center.z - ed.cutawayCenter.z).normalize(), cameraDirection) })).sort((a, b) => b.score - a.score)
-        const selectedSides = new Set(sideWalls.slice(0, 2).map(x => x.wall))
-        const lookingFromAbove = cameraPosition.y > ed.cutawayCenter.y + Math.max(ed.cutawaySize.y * 0.38, 0.25)
-        for (const wall of ed.cutawayWalls) {
-          const alpha = wall.ceiling ? (lookingFromAbove ? 0.08 : 1) : (selectedSides.has(wall) ? 0.08 : 1)
-          for (const mesh of wall.meshes) {
-            const entry = ed.cutawayMaterials.get(mesh.uniqueId)
-            if (entry) { entry.faded.alpha = alpha; entry.faded.transparencyMode = Material.MATERIAL_ALPHABLEND }
-          }
-        }
-      }
-      setStatus('Compressing studio cutaway model with Draco…')
+      setStatus('Compressing visible-only model with Draco…')
       const visibleBlob = await exportSceneBlob('mobica-visible')
 
       const upload = async (blob: Blob, suffix: string) => {
@@ -932,10 +906,6 @@ function EditorApp() {
       setStatus(`Share error: ${String(err)}`)
       console.error(err)
     } finally {
-      for (const [meshId, material] of originalMaterials) {
-        const entry = ed.cutawayMaterials.get(meshId)
-        if (entry) entry.mesh.material = entry.faded
-      }
       model.hiddenIds = originalHidden
       applyModelState()
       refresh()
@@ -1013,12 +983,11 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const [info, setInfo] = useState<ShareInfo | null>(null)
   const [error, setError] = useState('')
   const [remaining, setRemaining] = useState('')
-  const [activeTab, setActiveTab] = useState<'full' | 'visible'>('visible')
+  const [activeTab, setActiveTab] = useState<'full' | 'studio'>('studio')
   const [previewReady, setPreviewReady] = useState(false)
   const [previewProgress, setPreviewProgress] = useState('Preparing model preview…')
-  const fullMeshesRef = useRef<AbstractMesh[]>([])
-  const visibleMeshesRef = useRef<AbstractMesh[]>([])
   const cameraRef = useRef<ArcRotateCamera | null>(null)
+  const sharedEditorRef = useRef<Editor | null>(null)
 
   useEffect(() => {
     const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
@@ -1057,8 +1026,10 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     return () => window.clearInterval(timer)
   }, [info])
 
-  // Create one viewer scene and preload BOTH GLB versions before revealing the page.
-  // Tabs only switch mesh visibility after preload; they do not trigger another download.
+  // The share page uses the same Babylon scene setup and the exact same live
+  // automatic-cutaway calculation as the studio. The full GLB retains the
+  // original hierarchy, so wall groups can be detected and faded dynamically
+  // as the viewer rotates the camera.
   useEffect(() => {
     if (!info || !canvasRef.current) return
     const canvas = canvasRef.current
@@ -1067,70 +1038,99 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     scene.clearColor = new Color4(1, 1, 1, 1)
     scene.useRightHandedSystem = true
     scene.imageProcessingConfiguration.toneMappingEnabled = false
+    scene.imageProcessingConfiguration.exposure = 1
+    scene.imageProcessingConfiguration.contrast = 1
     const camera = new ArcRotateCamera('shared-camera', -Math.PI / 3, Math.PI / 2.7, 8, Vector3.Zero(), scene)
     camera.attachControl(canvas, false)
-    camera.lowerRadiusLimit = 0.08
     camera.wheelPrecision = 55
+    camera.wheelDeltaPercentage = 0.01
+    camera.lowerRadiusLimit = 0.08
+    camera.minZ = 0.01
     camera.panningSensibility = 180
     cameraRef.current = camera
-    const hemi = new HemisphericLight('shared-fill', new Vector3(0, 1, 0), scene)
-    hemi.intensity = 0.55
-    const sun = new DirectionalLight('shared-key', new Vector3(-0.6, -1.5, -0.7), scene)
-    sun.intensity = 0.65
+    const hemi = new HemisphericLight('soft-fill', new Vector3(0, 1, 0), scene)
+    hemi.intensity = 0.38
+    const sun = new DirectionalLight('soft-key', new Vector3(-0.6, -1.5, -0.7), scene)
+    sun.intensity = 0.55
     scene.environmentTexture = CubeTexture.CreateFromPrefilteredData('https://assets.babylonjs.com/environments/environmentSpecular.env', scene)
-    scene.environmentIntensity = 0.45
+    scene.environmentIntensity = 0.32
+    const highlight = new HighlightLayer('shared-selection', scene)
+    const sharedEd: Editor = {
+      scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [],
+      cutawayMaterials: new Map(), cutawayEnabled: true,
+      cutawayCenter: Vector3.Zero(), cutawaySize: Vector3.One()
+    }
+    sharedEditorRef.current = sharedEd
     let disposed = false
 
-    const frameModel = (meshes: AbstractMesh[]) => {
-      const geometry = meshes.filter(mesh => mesh.getTotalVertices() > 0)
-      if (!geometry.length) return
-      let min = new Vector3(Infinity, Infinity, Infinity)
-      let max = new Vector3(-Infinity, -Infinity, -Infinity)
-      for (const mesh of geometry) {
-        mesh.computeWorldMatrix(true)
-        const bounds = mesh.getBoundingInfo().boundingBox
-        min = Vector3.Minimize(min, bounds.minimumWorld)
-        max = Vector3.Maximize(max, bounds.maximumWorld)
-      }
-      camera.setTarget(min.add(max).scale(0.5))
-      camera.radius = Math.max(max.subtract(min).length() * 0.85, 0.5)
-    }
-
-    const loadBothModels = async () => {
+    const loadModel = async () => {
       try {
         setPreviewReady(false)
-        setPreviewProgress('Loading full model…')
-        const fullResult = await SceneLoader.ImportMeshAsync('', '', info.fullUrl, scene, undefined, '.glb')
-        const fullMeshes = fullResult.meshes.filter(mesh => mesh instanceof AbstractMesh)
-        fullMeshes.forEach(mesh => mesh.setEnabled(false))
+        setPreviewProgress('Loading shared model…')
+        const result = await SceneLoader.ImportMeshAsync('', '', info.fullUrl, scene, undefined, '.glb')
         if (disposed) return
-
-        setPreviewProgress('Loading visible-only model…')
-        const visibleResult = await SceneLoader.ImportMeshAsync('', '', info.visibleUrl, scene, undefined, '.glb')
-        const visibleMeshes = visibleResult.meshes.filter(mesh => mesh instanceof AbstractMesh)
-        visibleMeshes.forEach(mesh => mesh.setEnabled(false))
-        if (disposed) return
-
-        fullMeshesRef.current = fullMeshes
-        visibleMeshesRef.current = visibleMeshes
-        const initialMeshes = visibleMeshes
-        initialMeshes.forEach(mesh => mesh.setEnabled(true))
-        frameModel(initialMeshes)
-        setPreviewProgress('Both model versions are ready')
+        const imported: Node[] = [...result.transformNodes, ...result.meshes]
+        const importedIds = new Set(imported.map(node => node.uniqueId))
+        const roots = imported.filter(node => !node.parent || !importedIds.has(node.parent.uniqueId))
+        sharedEd.rootNodes = roots
+        sharedEd.cutawayWalls = collectCutawayWalls(roots)
+        sharedEd.cutawayMaterials.clear()
+        for (const wall of sharedEd.cutawayWalls) {
+          for (const mesh of wall.meshes) {
+            if (!mesh.material) continue
+            const original = mesh.material
+            const faded = original.clone(`${original.name || 'material'}_shared_cutaway_${mesh.uniqueId}`)
+            if (!faded) continue
+            const baseAlpha = original.alpha
+            faded.alpha = baseAlpha
+            faded.transparencyMode = Material.MATERIAL_ALPHABLEND
+            mesh.material = faded
+            sharedEd.cutawayMaterials.set(mesh.uniqueId, { mesh, original, faded, baseAlpha })
+          }
+        }
+        const geometry = result.meshes.filter(mesh => mesh.getTotalVertices() > 0)
+        if (geometry.length) {
+          let min = new Vector3(Infinity, Infinity, Infinity)
+          let max = new Vector3(-Infinity, -Infinity, -Infinity)
+          for (const mesh of geometry) {
+            mesh.computeWorldMatrix(true)
+            const bounds = mesh.getBoundingInfo().boundingBox
+            min = Vector3.Minimize(min, bounds.minimumWorld)
+            max = Vector3.Maximize(max, bounds.maximumWorld)
+          }
+          const size = max.subtract(min)
+          const center = min.add(max).scale(0.5)
+          sharedEd.cutawayCenter.copyFrom(center)
+          sharedEd.cutawaySize.copyFrom(size)
+          camera.setTarget(center)
+          camera.radius = Math.max(size.length() * 0.75, 0.5)
+          camera.maxZ = Math.max(camera.radius * 100, 100)
+          camera.wheelPrecision = Math.max(10, camera.radius * 8)
+        }
+        if (!sharedEd.cutawayWalls.length) {
+          setPreviewProgress('Model loaded · no wall groups detected. Name wall groups WALL_FRONT, WALL_BACK, WALL_LEFT, WALL_RIGHT and CEILING to enable automatic cutaway.')
+        } else {
+          setPreviewProgress('Studio view ready')
+        }
+        sharedEd.cutawayEnabled = activeTab === 'studio'
         setPreviewReady(true)
       } catch (err) {
-        if (!disposed) setError(`Could not preload both models: ${String(err)}`)
+        if (!disposed) setError(`Could not load shared model: ${String(err)}`)
       }
     }
 
-    void loadBothModels()
-    engine.runRenderLoop(() => scene.render())
+    void loadModel()
+    engine.runRenderLoop(() => {
+      if (sharedEd.cutawayEnabled && sharedEd.cutawayWalls.length) {
+        updateAutomaticCutaway(sharedEd, sharedEd.cutawayCenter, sharedEd.cutawaySize)
+      }
+      scene.render()
+    })
     const resize = () => engine.resize()
     window.addEventListener('resize', resize)
     return () => {
       disposed = true
-      fullMeshesRef.current = []
-      visibleMeshesRef.current = []
+      sharedEditorRef.current = null
       cameraRef.current = null
       window.removeEventListener('resize', resize)
       engine.dispose()
@@ -1138,25 +1138,12 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   }, [info])
 
   useEffect(() => {
-    if (!previewReady) return
-    const showFull = activeTab === 'full'
-    fullMeshesRef.current.forEach(mesh => mesh.setEnabled(showFull))
-    visibleMeshesRef.current.forEach(mesh => mesh.setEnabled(!showFull))
-    const meshes = showFull ? fullMeshesRef.current : visibleMeshesRef.current
-    if (cameraRef.current) {
-      const geometry = meshes.filter(mesh => mesh.getTotalVertices() > 0)
-      if (geometry.length) {
-        let min = new Vector3(Infinity, Infinity, Infinity)
-        let max = new Vector3(-Infinity, -Infinity, -Infinity)
-        for (const mesh of geometry) {
-          mesh.computeWorldMatrix(true)
-          const bounds = mesh.getBoundingInfo().boundingBox
-          min = Vector3.Minimize(min, bounds.minimumWorld)
-          max = Vector3.Maximize(max, bounds.maximumWorld)
-        }
-        cameraRef.current.setTarget(min.add(max).scale(0.5))
-        cameraRef.current.radius = Math.max(max.subtract(min).length() * 0.85, 0.5)
-      }
+    const sharedEd = sharedEditorRef.current
+    if (!sharedEd || !previewReady) return
+    const studioView = activeTab === 'studio'
+    sharedEd.cutawayEnabled = studioView
+    if (!studioView) {
+      for (const entry of sharedEd.cutawayMaterials.values()) entry.faded.alpha = entry.baseAlpha
     }
   }, [activeTab, previewReady])
 
@@ -1164,14 +1151,14 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     <header className="sharedHeader">
       <div className="brand"><div><strong>MOBICA</strong><small>3D MODEL PREVIEW</small></div></div>
       <div className="sharedTabs">
+        <button className={activeTab === 'studio' ? 'active' : ''} onClick={() => setActiveTab('studio')} disabled={!previewReady}>Studio view</button>
         <button className={activeTab === 'full' ? 'active' : ''} onClick={() => setActiveTab('full')} disabled={!previewReady}>Full model</button>
-        <button className={activeTab === 'visible' ? 'active' : ''} onClick={() => setActiveTab('visible')} disabled={!previewReady}>Visible only</button>
       </div>
       <div className="sharedMeta"><span><Clock size={14}/> {remaining || 'Checking expiry…'}</span><span className="readOnlyTag">READ ONLY</span></div>
     </header>
     <main className={`sharedViewport ${!previewReady ? 'previewLoading' : ''}`}>
       <canvas ref={canvasRef}/>
-      {!previewReady && !error && <div className="sharedMessage previewLoadingMessage"><div className="previewSpinner"/><h2>Preparing your 3D model</h2><p>{previewProgress}</p><small>Please wait while both model versions finish loading.</small></div>}
+      {!previewReady && !error && <div className="sharedMessage previewLoadingMessage"><div className="previewSpinner"/><h2>Preparing your 3D model</h2><p>{previewProgress}</p><small>Please wait while the shared model loads.</small></div>}
       {error && <div className="sharedMessage errorMessage"><h2>Link unavailable</h2><p>{error}</p></div>}
       {previewReady && !error && <><div className="sharedFileName">{info?.filename}</div><div className="sharedHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</div></>}
     </main>
