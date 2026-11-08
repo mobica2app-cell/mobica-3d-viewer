@@ -150,7 +150,7 @@ function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, modelSize: Vec
   const cameraDirection = new Vector3(cameraPosition.x - modelCenter.x, 0, cameraPosition.z - modelCenter.z)
   if (cameraDirection.lengthSquared() > 1e-6) cameraDirection.normalize()
   const sideWalls = ed.cutawayWalls.filter(wall => !wall.ceiling).map(wall => ({ wall, score: Vector3.Dot(new Vector3(wall.center.x - modelCenter.x, 0, wall.center.z - modelCenter.z).normalize(), cameraDirection) })).sort((a, b) => b.score - a.score)
-  const selectedSides = new Set(sideWalls.filter(item => item.score > 0.22).slice(0, 2).map(item => item.wall))
+  const selectedSides = new Set(sideWalls.slice(0, 2).map(item => item.wall))
   const lookingFromAbove = cameraPosition.y > modelCenter.y + Math.max(modelSize.y * 0.38, 0.25)
   const targets = new Map<number, number>()
   for (const wall of ed.cutawayWalls) {
@@ -164,30 +164,6 @@ function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, modelSize: Vec
     const next = current + (target - current) * 0.16
     entry.faded.alpha = Math.abs(target - next) < 0.008 ? target : next
   }
-}
-
-// Return the same two camera-facing wall groups used by the live studio cutaway.
-// Sharing bakes these groups out of the visible-only GLB so the link opens with
-// the same room composition even though the shared GLB is a static snapshot.
-function getAutomaticCutawayMeshes(ed: Editor): AbstractMesh[] {
-  const cameraPosition = ed.camera.position
-  const modelCenter = ed.cutawayCenter
-  const cameraDirection = new Vector3(cameraPosition.x - modelCenter.x, 0, cameraPosition.z - modelCenter.z)
-  if (cameraDirection.lengthSquared() > 1e-6) cameraDirection.normalize()
-  const sideWalls = ed.cutawayWalls
-    .filter(wall => !wall.ceiling)
-    .map(wall => ({
-      wall,
-      score: Vector3.Dot(
-        new Vector3(wall.center.x - modelCenter.x, 0, wall.center.z - modelCenter.z).normalize(),
-        cameraDirection
-      )
-    }))
-    .sort((a, b) => b.score - a.score)
-  const selectedSides = sideWalls.filter(item => item.score > 0.22).slice(0, 2).map(item => item.wall)
-  const lookingFromAbove = cameraPosition.y > modelCenter.y + Math.max(ed.cutawaySize.y * 0.38, 0.25)
-  return [...selectedSides, ...(lookingFromAbove ? ed.cutawayWalls.filter(wall => wall.ceiling) : [])]
-    .flatMap(wall => wall.meshes)
 }
 
 function EditorApp() {
@@ -892,25 +868,43 @@ function EditorApp() {
     if (!supabaseUrl || !supabaseKey) { setStatus('Configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env'); return }
     setBusy(true); setStatus('Preparing two model versions for sharing…')
     const originalHidden = new Set(model.hiddenIds)
-    const originalCutawayEnabled = ed.cutawayEnabled
+    const originalMaterials = new Map<number, Material>()
     try {
-      // Freeze the live cutaway while exporting so the full version stays truly full.
-      ed.cutawayEnabled = false
-      for (const entry of ed.cutawayMaterials.values()) entry.faded.alpha = entry.baseAlpha
-
-      // Version 1: all non-deleted layers, including hidden layers and all room walls.
+      // Version 1: export the complete model without the editor's visual cutaway.
       model.hiddenIds.clear()
       applyModelState()
+      for (const [meshId, entry] of ed.cutawayMaterials) {
+        originalMaterials.set(meshId, entry.mesh.material as Material)
+        entry.mesh.material = entry.original
+      }
       setStatus('Compressing full model with Draco…')
       const fullBlob = await exportSceneBlob('mobica-full')
 
-      // Version 2: preserve manual visibility and bake the studio's two nearest
-      // camera-facing walls (plus ceiling when viewed from above) out of the GLB.
+      // Version 2: reproduce the studio camera cutaway in the exported GLB.
+      for (const [meshId, entry] of ed.cutawayMaterials) {
+        entry.mesh.material = entry.faded
+      }
       model.hiddenIds = new Set(originalHidden)
       applyModelState()
-      const cutawayMeshes = getAutomaticCutawayMeshes(ed)
-      cutawayMeshes.forEach(mesh => mesh.setEnabled(false))
-      setStatus('Compressing studio cutaway view with Draco…')
+      if (ed.cutawayEnabled && ed.cutawayWalls.length) {
+        updateAutomaticCutaway(ed, ed.cutawayCenter, ed.cutawaySize)
+        // The editor fades smoothly; the share export must capture the final opacity,
+        // not an intermediate animation frame.
+        const cameraPosition = ed.camera.position
+        const cameraDirection = new Vector3(cameraPosition.x - ed.cutawayCenter.x, 0, cameraPosition.z - ed.cutawayCenter.z)
+        if (cameraDirection.lengthSquared() > 1e-6) cameraDirection.normalize()
+        const sideWalls = ed.cutawayWalls.filter(w => !w.ceiling).map(w => ({ wall: w, score: Vector3.Dot(new Vector3(w.center.x - ed.cutawayCenter.x, 0, w.center.z - ed.cutawayCenter.z).normalize(), cameraDirection) })).sort((a, b) => b.score - a.score)
+        const selectedSides = new Set(sideWalls.slice(0, 2).map(x => x.wall))
+        const lookingFromAbove = cameraPosition.y > ed.cutawayCenter.y + Math.max(ed.cutawaySize.y * 0.38, 0.25)
+        for (const wall of ed.cutawayWalls) {
+          const alpha = wall.ceiling ? (lookingFromAbove ? 0.08 : 1) : (selectedSides.has(wall) ? 0.08 : 1)
+          for (const mesh of wall.meshes) {
+            const entry = ed.cutawayMaterials.get(mesh.uniqueId)
+            if (entry) { entry.faded.alpha = alpha; entry.faded.transparencyMode = Material.MATERIAL_ALPHABLEND }
+          }
+        }
+      }
+      setStatus('Compressing studio cutaway model with Draco…')
       const visibleBlob = await exportSceneBlob('mobica-visible')
 
       const upload = async (blob: Blob, suffix: string) => {
@@ -938,9 +932,12 @@ function EditorApp() {
       setStatus(`Share error: ${String(err)}`)
       console.error(err)
     } finally {
+      for (const [meshId, material] of originalMaterials) {
+        const entry = ed.cutawayMaterials.get(meshId)
+        if (entry) entry.mesh.material = entry.faded
+      }
       model.hiddenIds = originalHidden
       applyModelState()
-      ed.cutawayEnabled = originalCutawayEnabled
       refresh()
       setBusy(false)
     }
@@ -1116,7 +1113,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
 
         fullMeshesRef.current = fullMeshes
         visibleMeshesRef.current = visibleMeshes
-        const initialMeshes = fullMeshes
+        const initialMeshes = visibleMeshes
         initialMeshes.forEach(mesh => mesh.setEnabled(true))
         frameModel(initialMeshes)
         setPreviewProgress('Both model versions are ready')
