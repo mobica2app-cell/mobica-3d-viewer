@@ -166,6 +166,30 @@ function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, modelSize: Vec
   }
 }
 
+// Return the same two camera-facing wall groups used by the live studio cutaway.
+// Sharing bakes these groups out of the visible-only GLB so the link opens with
+// the same room composition even though the shared GLB is a static snapshot.
+function getAutomaticCutawayMeshes(ed: Editor): AbstractMesh[] {
+  const cameraPosition = ed.camera.position
+  const modelCenter = ed.cutawayCenter
+  const cameraDirection = new Vector3(cameraPosition.x - modelCenter.x, 0, cameraPosition.z - modelCenter.z)
+  if (cameraDirection.lengthSquared() > 1e-6) cameraDirection.normalize()
+  const sideWalls = ed.cutawayWalls
+    .filter(wall => !wall.ceiling)
+    .map(wall => ({
+      wall,
+      score: Vector3.Dot(
+        new Vector3(wall.center.x - modelCenter.x, 0, wall.center.z - modelCenter.z).normalize(),
+        cameraDirection
+      )
+    }))
+    .sort((a, b) => b.score - a.score)
+  const selectedSides = sideWalls.filter(item => item.score > 0.22).slice(0, 2).map(item => item.wall)
+  const lookingFromAbove = cameraPosition.y > modelCenter.y + Math.max(ed.cutawaySize.y * 0.38, 0.25)
+  return [...selectedSides, ...(lookingFromAbove ? ed.cutawayWalls.filter(wall => wall.ceiling) : [])]
+    .flatMap(wall => wall.meshes)
+}
+
 function EditorApp() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const editorRef = useRef<Editor | null>(null)
@@ -868,17 +892,25 @@ function EditorApp() {
     if (!supabaseUrl || !supabaseKey) { setStatus('Configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env'); return }
     setBusy(true); setStatus('Preparing two model versions for sharing…')
     const originalHidden = new Set(model.hiddenIds)
+    const originalCutawayEnabled = ed.cutawayEnabled
     try {
-      // Version 1: all non-deleted layers, including layers currently hidden in the editor.
+      // Freeze the live cutaway while exporting so the full version stays truly full.
+      ed.cutawayEnabled = false
+      for (const entry of ed.cutawayMaterials.values()) entry.faded.alpha = entry.baseAlpha
+
+      // Version 1: all non-deleted layers, including hidden layers and all room walls.
       model.hiddenIds.clear()
       applyModelState()
       setStatus('Compressing full model with Draco…')
       const fullBlob = await exportSceneBlob('mobica-full')
 
-      // Version 2: only currently visible layers; deleted and hidden layers are omitted.
+      // Version 2: preserve manual visibility and bake the studio's two nearest
+      // camera-facing walls (plus ceiling when viewed from above) out of the GLB.
       model.hiddenIds = new Set(originalHidden)
       applyModelState()
-      setStatus('Compressing visible-only model with Draco…')
+      const cutawayMeshes = getAutomaticCutawayMeshes(ed)
+      cutawayMeshes.forEach(mesh => mesh.setEnabled(false))
+      setStatus('Compressing studio cutaway view with Draco…')
       const visibleBlob = await exportSceneBlob('mobica-visible')
 
       const upload = async (blob: Blob, suffix: string) => {
@@ -908,6 +940,7 @@ function EditorApp() {
     } finally {
       model.hiddenIds = originalHidden
       applyModelState()
+      ed.cutawayEnabled = originalCutawayEnabled
       refresh()
       setBusy(false)
     }
@@ -983,7 +1016,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const [info, setInfo] = useState<ShareInfo | null>(null)
   const [error, setError] = useState('')
   const [remaining, setRemaining] = useState('')
-  const [activeTab, setActiveTab] = useState<'full' | 'visible'>('full')
+  const [activeTab, setActiveTab] = useState<'full' | 'visible'>('visible')
   const [previewReady, setPreviewReady] = useState(false)
   const [previewProgress, setPreviewProgress] = useState('Preparing model preview…')
   const fullMeshesRef = useRef<AbstractMesh[]>([])
