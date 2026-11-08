@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Engine, Scene, ArcRotateCamera, Vector3, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, PointerEventTypes, MeshBuilder } from '@babylonjs/core'
+import { Engine, Scene, ArcRotateCamera, Vector3, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, PointerEventTypes, MeshBuilder, LinesMesh } from '@babylonjs/core'
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader'
 import '@babylonjs/loaders/glTF'
 import { GLTF2Export } from '@babylonjs/serializers/glTF'
@@ -198,7 +198,7 @@ function EditorApp() {
   const cutDrawModeRef = useRef(false)
   const cutGestureRef = useRef<{ mesh: Mesh; start: Vector3 } | null>(null)
   const cutTargetRef = useRef<Mesh | null>(null)
-  const cutLineRef = useRef<Mesh | null>(null)
+  const cutLineRef = useRef<LinesMesh | null>(null)
   const performDrawCutRef = useRef<((mesh: Mesh, start: Vector3, end: Vector3) => void) | null>(null)
   const [shareUrl, setShareUrl] = useState('')
   const [shareExpiry, setShareExpiry] = useState<number | null>(null)
