@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Engine, Scene, ArcRotateCamera, Vector3, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, PointerEventTypes, MeshBuilder, LinesMesh } from '@babylonjs/core'
+import { Engine, Scene, ArcRotateCamera, Vector3, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh } from '@babylonjs/core'
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader'
 import '@babylonjs/loaders/glTF'
 import { GLTF2Export } from '@babylonjs/serializers/glTF'
-import { Upload, Eye, EyeOff, Trash2, Download, Layers, Paintbrush, RotateCcw, Box, ChevronRight, ChevronDown, Share2, Copy, Clock, ExternalLink, Search, X, Undo2, Redo2, Scissors } from 'lucide-react'
+import { Upload, Eye, EyeOff, Trash2, Download, Layers, Paintbrush, RotateCcw, Box, ChevronRight, ChevronDown, Share2, Copy, Clock, ExternalLink, Search, X, Undo2, Redo2, Scissors, Pencil } from 'lucide-react'
 import './styles.css'
 
 type Item = { id: number; name: string; depth: number; visible: boolean; hasMesh: boolean; parentId: number | null }
@@ -174,6 +174,9 @@ function EditorApp() {
   const [items, setItems] = useState<Item[]>([])
   const [selected, setSelected] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [marquee, setMarquee] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
+  const [renamingId, setRenamingId] = useState<number | null>(null)
+  const [renameValue, setRenameValue] = useState('')
   const selectedIdsRef = useRef<Set<number>>(new Set())
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [layerSearch, setLayerSearch] = useState('')
@@ -209,6 +212,109 @@ function EditorApp() {
   const redoStackRef = useRef<ModelSnapshot[]>([])
   
 
+
+
+  const commitRename = (id: number) => {
+    const ed = editorRef.current
+    const node = ed?.nodes.get(id)
+    const nextName = renameValue.trim()
+    if (node && nextName) {
+      node.name = nextName
+      refresh()
+      setStatus(`Renamed layer to "${nextName}"`)
+    }
+    setRenamingId(null)
+  }
+
+  // Alt + left-drag marquee selection. Normal left-drag remains reserved for orbiting.
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    let start: { x: number; y: number } | null = null
+    let current: { x: number; y: number } | null = null
+    const localPoint = (event: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect()
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top }
+    }
+    const down = (event: PointerEvent) => {
+      if (event.button !== 0 || !event.altKey || cutDrawModeRef.current || !modelRef.current) return
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+      start = current = localPoint(event)
+      canvas.setPointerCapture(event.pointerId)
+      setMarquee({ x: start.x, y: start.y, width: 0, height: 0 })
+    }
+    const move = (event: PointerEvent) => {
+      if (!start) return
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+      current = localPoint(event)
+      setMarquee({
+        x: Math.min(start.x, current.x), y: Math.min(start.y, current.y),
+        width: Math.abs(current.x - start.x), height: Math.abs(current.y - start.y),
+      })
+    }
+    const up = (event: PointerEvent) => {
+      if (!start || !current) return
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+      const a = start, b = current
+      start = current = null
+      setMarquee(null)
+      if (Math.abs(b.x - a.x) < 5 || Math.abs(b.y - a.y) < 5) return
+      const ed = editorRef.current
+      const engine = engineRef.current
+      if (!ed || !engine) return
+      const rect = canvas.getBoundingClientRect()
+      const sx = Math.min(a.x, b.x), sy = Math.min(a.y, b.y)
+      const ex = Math.max(a.x, b.x), ey = Math.max(a.y, b.y)
+      const viewport = ed.camera.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight())
+      const selectedNodes = new Set<number>()
+      for (const mesh of ed.scene.meshes) {
+        if (!(mesh instanceof AbstractMesh) || !mesh.isEnabled() || mesh.getTotalVertices() === 0) continue
+        mesh.computeWorldMatrix(true)
+        const bounds = mesh.getBoundingInfo().boundingBox
+        const corners = [
+          new Vector3(bounds.minimumWorld.x, bounds.minimumWorld.y, bounds.minimumWorld.z),
+          new Vector3(bounds.minimumWorld.x, bounds.minimumWorld.y, bounds.maximumWorld.z),
+          new Vector3(bounds.minimumWorld.x, bounds.maximumWorld.y, bounds.minimumWorld.z),
+          new Vector3(bounds.minimumWorld.x, bounds.maximumWorld.y, bounds.maximumWorld.z),
+          new Vector3(bounds.maximumWorld.x, bounds.minimumWorld.y, bounds.minimumWorld.z),
+          new Vector3(bounds.maximumWorld.x, bounds.minimumWorld.y, bounds.maximumWorld.z),
+          new Vector3(bounds.maximumWorld.x, bounds.maximumWorld.y, bounds.minimumWorld.z),
+          new Vector3(bounds.maximumWorld.x, bounds.maximumWorld.y, bounds.maximumWorld.z),
+        ]
+        const projected = corners.map(point => Vector3.Project(point, Matrix.Identity(), ed.scene.getTransformMatrix(), viewport))
+        const screenX = projected.map(p => p.x * rect.width / engine.getRenderWidth())
+        const screenY = projected.map(p => p.y * rect.height / engine.getRenderHeight())
+        const minX = Math.min(...screenX), maxX = Math.max(...screenX)
+        const minY = Math.min(...screenY), maxY = Math.max(...screenY)
+        if (maxX < sx || minX > ex || maxY < sy || minY > ey) continue
+        let node: Node | null = mesh
+        while (node && !ed.nodes.has(node.uniqueId)) node = node.parent
+        if (node) selectedNodes.add(node.uniqueId)
+      }
+      const ids = [...selectedNodes]
+      if (ids.length) {
+        select(ids[0], false)
+        for (const id of ids.slice(1)) select(id, true)
+        setStatus(`Selected ${ids.length} layer${ids.length === 1 ? '' : 's'}`)
+      }
+    }
+    canvas.addEventListener('pointerdown', down, true)
+    canvas.addEventListener('pointermove', move, true)
+    canvas.addEventListener('pointerup', up, true)
+    canvas.addEventListener('pointercancel', up, true)
+    return () => {
+      canvas.removeEventListener('pointerdown', down, true)
+      canvas.removeEventListener('pointermove', move, true)
+      canvas.removeEventListener('pointerup', up, true)
+      canvas.removeEventListener('pointercancel', up, true)
+    }
+  }, [items])
 
   const captureSnapshot = (): ModelSnapshot => ({
     hiddenIds: new Set(modelRef.current?.hiddenIds ?? []),
@@ -820,7 +926,10 @@ function EditorApp() {
       <button className="chevron" onClick={() => { setExpanded(prev => { const n = new Set(prev); n.has(item.id) ? n.delete(item.id) : n.add(item.id); return n }) }}>
         {hasChildren ? expanded.has(item.id) ? <ChevronDown size={14}/> : <ChevronRight size={14}/> : <span style={{width:14}}/>}
       </button>
-      <button className="layerName" onClick={(e) => select(item.id, e.ctrlKey || e.metaKey)} title={`${item.name} · Press Shift to move selection up one parent collection; Ctrl/Cmd-click adds individual layers`}>{item.name}</button>
+      {renamingId === item.id
+        ? <input className="layerRenameInput" autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onClick={e => e.stopPropagation()} onBlur={() => commitRename(item.id)} onKeyDown={e => { if (e.key === 'Enter') commitRename(item.id); if (e.key === 'Escape') setRenamingId(null) }} />
+        : <button className="layerName" onClick={(e) => select(item.id, e.ctrlKey || e.metaKey)} title={`${item.name} · Ctrl/Cmd-click adds individual layers; Alt + drag in the viewport selects multiple layers`}>{item.name}</button>}
+      <button className="iconBtn" title={`Rename ${item.name}`} aria-label={`Rename ${item.name}`} onClick={() => { setRenameValue(item.name); setRenamingId(item.id) }}><Pencil size={13}/></button>
       <button className="iconBtn" title="Hide/show" aria-label={`Hide or show ${item.name}`} onClick={() => toggleVisibility(item.id)}>{item.visible ? <Eye size={15}/> : <EyeOff size={15}/>}</button>
       <button className="iconBtn layerDeleteBtn" title={`Delete ${item.name}`} aria-label={`Delete ${item.name}`} onClick={() => deleteLayer(item.id)}><Trash2 size={14}/></button>
     </div>
@@ -858,8 +967,8 @@ function EditorApp() {
         {layerSearch && <button className="searchClear" aria-label="Clear layer search" title="Clear search" onClick={() => setLayerSearch('')}><X size={14}/></button>}
       </div>
       {searchTerms.length > 0 && <div className="searchSummary"><span>{matchingLayerIds.size} matching layer{matchingLayerIds.size === 1 ? '' : 's'}</span>{matchingLayerIds.size > 0 && <div className="searchActions"><button className="btn searchHide" onClick={hideMatchingLayers}><EyeOff size={13}/> Hide matches</button><button className="btn searchShow" onClick={unhideMatchingLayers}><Eye size={13}/> Unhide matches</button><button className="btn danger searchDelete" onClick={deleteMatchingLayers}><Trash2 size={13}/> Delete matches</button></div>}</div>}
-      <p className="hint">Click to select a layer. Press Shift to move up one parent collection and select all its descendants. Press Shift again to move up another level. Ctrl/Cmd-click adds individual layers.</p><p className="hint">Click a cabinet door in the model or select its layer here. Hide it to reveal the interior.</p><div className="layers">{items.length ? (searchTerms.length && matchingLayerIds.size === 0 ? <div className="empty">No layers match “{layerSearch}”</div> : items.map(renderItem)) : <div className="empty">No model loaded</div>}</div></aside>
-      <section className="viewport"><canvas ref={canvasRef}/>{!filename && <iframe className="brandExperienceFrame" src="/brand-experience.html" title="Interactive Mobica 3D brand experience" />}{filename && <div className="viewportBadge">BABYLON.JS · PBR RENDERER</div>}{(filename || busy) && <div className="status">{busy ? 'Working… ' : ''}{status}</div>}</section>
+      <p className="hint">Click to select a layer. Alt + left-drag in the viewport to select multiple layers. Ctrl/Cmd-click adds individual layers.</p><p className="hint">Click a cabinet door in the model or select its layer here. Hide it to reveal the interior.</p><div className="layers">{items.length ? (searchTerms.length && matchingLayerIds.size === 0 ? <div className="empty">No layers match “{layerSearch}”</div> : items.map(renderItem)) : <div className="empty">No model loaded</div>}</div></aside>
+      <section className="viewport"><canvas ref={canvasRef}/>{marquee && <div className="selectionMarquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}{!filename && <iframe className="brandExperienceFrame" src="/brand-experience.html" title="Interactive Mobica 3D brand experience" />}{filename && <div className="viewportBadge">BABYLON.JS · PBR RENDERER</div>}{(filename || busy) && <div className="status">{busy ? 'Working… ' : ''}{status}</div>}</section>
       <aside className="inspector"><div className="panelTitle"><Paintbrush size={16}/> Inspector</div>{selected != null && chosen() ? <><div className="selectedLabel">{selectedIds.size > 1 ? `${selectedIds.size} layers selected · editing primary: ${chosen()?.name}` : chosen()?.name}</div><div className="actions"><button className="btn" onClick={() => toggleSelectedVisibility(false)}><EyeOff size={15}/> Hide selected</button><button className="btn" onClick={() => toggleSelectedVisibility(true)}><Eye size={15}/> Show selected</button><button className="btn danger" onClick={remove}><Trash2 size={15}/> Delete</button></div>
       <div className="editorSection"><div className="editorSectionTitle">Material</div><label className="field">Base color<input type="color" value={color} onChange={e => updateColor(e.target.value)}/></label><label className="field">Roughness <span>{roughness.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={roughness} onChange={e => updateRoughness(Number(e.target.value))}/></label><label className="field">Metallic <span>{metallic.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={metallic} onChange={e => updateMetallic(Number(e.target.value))}/></label><label className="field">Opacity <span>{Math.round(opacity * 100)}%</span><input type="range" min="0.1" max="1" step="0.01" value={opacity} onChange={e => updateOpacity(Number(e.target.value))}/></label><label className="btn full"><Upload size={15}/> Replace base-color texture<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateTexture(f); e.target.value = '' }}/></label><p className="hint">Texture placement uses the selected mesh's original UV coordinates.</p></div><div className="editorSection"><div className="editorSectionTitle"><Scissors size={14}/> Interactive mesh cut</div><p className="hint">Select the combined wall mesh, start drawing, then drag a line across the model from one edge to the opposite edge. The line defines the cutting plane from your current camera view.</p>{!cutDrawMode ? <button className="btn full" onClick={startDrawCut} disabled={!chosen()}><Scissors size={14}/> Draw cut on model</button> : <><div className="cutModeNotice">Cut mode active — drag across the selected mesh</div><button className="btn full" onClick={cancelDrawCut}><X size={14}/> Cancel cut</button></>}<p className="hint">Repeat on each new piece to separate all four walls. The cut creates two independently selectable mesh surfaces; it does not add closed caps.</p></div></> : <p className="hint">Select a layer or click any visible part of the model.</p>}
       <div className="separator"/><div className="panelTitle">Lighting & quality</div><label className="field">Brightness <span>{exposure.toFixed(2)}×</span><input aria-label="Brightness" type="range" min="0.35" max="1.8" step="0.05" value={exposure} onChange={e => { const n = Number(e.target.value); setExposure(n); if (editorRef.current) editorRef.current.scene.imageProcessingConfiguration.exposure = n }}/></label><label className="field">Environment light <span>{environment.toFixed(2)}</span><input aria-label="Environment light" type="range" min="0" max="1.2" step="0.02" value={environment} onChange={e => { const n = Number(e.target.value); setEnvironment(n); if (editorRef.current) editorRef.current.scene.environmentIntensity = n }}/></label><label className="field">Render quality <span>{quality}%</span><input aria-label="Render quality" type="range" min="25" max="100" step="5" value={quality} onChange={e => updateQuality(Number(e.target.value))}/></label><p className="hint">Higher quality increases internal render resolution and texture filtering. It may use more GPU memory and reduce frame rate on slower devices.</p><button className="btn full" onClick={() => { setExposure(1); setEnvironment(0.32); updateQuality(75); if (editorRef.current) { editorRef.current.scene.imageProcessingConfiguration.exposure = 1; editorRef.current.scene.environmentIntensity = 0.32 } }}><RotateCcw size={14}/> Reset lighting & quality</button><p className="hint">Adjust brightness independently from environment reflections and render quality.</p></aside></main>

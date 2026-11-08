@@ -83,3 +83,7 @@
 .cutModeNotice{padding:10px 12px;border:1px solid #f07848;background:rgba(240,120,72,.12);border-radius:8px;color:inherit;font-size:12px;line-height:1.45}
 
 .cutawayControl{margin:0 2px 12px;padding:10px;background:#102a2b;border:1px solid #28645d;border-radius:8px}.cutawayControl label{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;color:#d7fff7}.cutawayControl input{accent-color:#11b5a3}.cutawayControl small{display:block;margin:7px 0 0 22px;color:#93aaa9;font-size:9px;line-height:1.5}
+
+/* Alt-drag multi-selection marquee and inline layer rename */
+.selectionMarquee{position:absolute;z-index:8;border:1px solid #168bff;background:rgba(22,139,255,.14);pointer-events:none;box-sizing:border-box}
+.layerRenameInput{flex:1;min-width:0;width:0;border:1px solid #168bff;border-radius:4px;background:#fff;color:#172033;padding:5px;font:inherit;outline:none}
