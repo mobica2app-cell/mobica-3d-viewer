@@ -978,6 +978,15 @@ function EditorApp() {
 
 
 type ShareInfo = { filename: string; expiresAt: number; visibleUrl: string; fullUrl: string }
+type SharedModelVariant = {
+  roots: Node[]
+  walls: CutawayWall[]
+  materials: Map<number, CutawayMaterial>
+  center: Vector3
+  size: Vector3
+}
+type SharedModelVariants = { visible: SharedModelVariant; all: SharedModelVariant }
+
 function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [info, setInfo] = useState<ShareInfo | null>(null)
@@ -988,10 +997,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const [previewProgress, setPreviewProgress] = useState('Preparing model preview…')
   const cameraRef = useRef<ArcRotateCamera | null>(null)
   const sharedEditorRef = useRef<Editor | null>(null)
-  const sharedVariantsRef = useRef<{
-    visible: { roots: Node[]; walls: CutawayWall[]; materials: Map<number, CutawayMaterial>; center: Vector3; size: Vector3 }
-    all: { roots: Node[]; walls: CutawayWall[]; materials: Map<number, CutawayMaterial>; center: Vector3; size: Vector3 }
-  } | null>(null)
+  const sharedVariantsRef = useRef<SharedModelVariants | null>(null)
 
   useEffect(() => {
     const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
@@ -1101,7 +1107,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
       return { roots, walls, materials, center, size }
     }
 
-    const activateVariant = (variant: NonNullable<typeof sharedVariantsRef.current>['visible']) => {
+    const activateVariant = (variant: SharedModelVariant) => {
       const variants = sharedVariantsRef.current
       if (!variants) return
       for (const root of [...variants.visible.roots, ...variants.all.roots]) root.setEnabled(false)
