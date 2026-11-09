@@ -191,6 +191,7 @@ function EditorApp() {
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [layerSearch, setLayerSearch] = useState('')
   const [busy, setBusy] = useState(false)
+  const [exportFormat, setExportFormat] = useState<'glb' | 'gltf' | 'obj' | 'stl'>('glb')
   const [status, setStatus] = useState('Upload a GLB model to begin')
   const [filename, setFilename] = useState('')
   const [exposure, setExposure] = useState(1)
@@ -855,18 +856,152 @@ function EditorApp() {
     return blob
   }
 
-  const exportGLB = async () => {
+  const downloadBlob = (blob: Blob, fileName: string) => {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = fileName
+    a.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500)
+  }
+
+  const gzipBlob = async (blob: Blob): Promise<Blob> => {
+    if (!('CompressionStream' in window)) throw new Error('Gzip compression is not supported by this browser')
+    return await new Response(blob.stream().pipeThrough(new CompressionStream('gzip'))).blob()
+  }
+
+  const getExportMeshes = () => {
+    const model = modelRef.current
+    if (!model) throw new Error('No model loaded')
+    const allowed = new Set<number>()
+    const walk = (node: Node) => {
+      if (model.deletedIds.has(node.uniqueId)) return
+      allowed.add(node.uniqueId)
+      childrenOf(node).forEach(walk)
+    }
+    model.roots.forEach(walk)
+    return [...(editorRef.current?.scene.meshes ?? [])].filter(mesh =>
+      allowed.has(mesh.uniqueId) && mesh.isEnabled() && mesh.getTotalVertices() > 0 &&
+      ![...mesh.getAncestors()].some(parent => model.deletedIds.has(parent.uniqueId) || model.hiddenIds.has(parent.uniqueId))
+    )
+  }
+
+  const exportOBJ = async () => {
+    const meshes = getExportMeshes()
+    let vertexOffset = 1
+    const lines = ['# Mobica compressed OBJ export']
+    for (const mesh of meshes) {
+      const positions = mesh.getVerticesData(VertexBuffer.PositionKind)
+      if (!positions) continue
+      mesh.computeWorldMatrix(true)
+      const world = mesh.getWorldMatrix()
+      lines.push(`o ${(mesh.name || 'Mesh').replace(/[\r\n]/g, '_').replace(/\s+/g, '_')}`)
+      for (let i = 0; i < positions.length; i += 3) {
+        const point = Vector3.TransformCoordinates(new Vector3(positions[i], positions[i + 1], positions[i + 2]), world)
+        lines.push(`v ${point.x} ${point.y} ${point.z}`)
+      }
+      const indices = mesh.getIndices()
+      if (indices) {
+        for (let i = 0; i + 2 < indices.length; i += 3) lines.push(`f ${indices[i] + vertexOffset} ${indices[i + 1] + vertexOffset} ${indices[i + 2] + vertexOffset}`)
+      } else {
+        for (let i = 0; i + 2 < positions.length / 3; i += 3) lines.push(`f ${vertexOffset + i} ${vertexOffset + i + 1} ${vertexOffset + i + 2}`)
+      }
+      vertexOffset += positions.length / 3
+    }
+    if (vertexOffset === 1) throw new Error('No visible geometry to export')
+    const raw = new Blob([lines.join('\n')], { type: 'text/plain' })
+    const compressed = await gzipBlob(raw)
+    downloadBlob(compressed, 'mobica-edited.obj.gz')
+    return { raw: raw.size, compressed: compressed.size }
+  }
+
+  const exportSTL = async () => {
+    const meshes = getExportMeshes()
+    const triangles: Array<[Vector3, Vector3, Vector3]> = []
+    for (const mesh of meshes) {
+      const positions = mesh.getVerticesData(VertexBuffer.PositionKind)
+      if (!positions) continue
+      mesh.computeWorldMatrix(true)
+      const world = mesh.getWorldMatrix()
+      const indices = mesh.getIndices()
+      const count = indices ? indices.length : positions.length / 3
+      for (let i = 0; i + 2 < count; i += 3) {
+        const getPoint = (index: number) => {
+          const offset = (indices ? indices[index] : index) * 3
+          return Vector3.TransformCoordinates(new Vector3(positions[offset], positions[offset + 1], positions[offset + 2]), world)
+        }
+        triangles.push([getPoint(i), getPoint(i + 1), getPoint(i + 2)])
+      }
+    }
+    if (!triangles.length) throw new Error('No visible triangles to export')
+    const raw = new ArrayBuffer(84 + triangles.length * 50)
+    const view = new DataView(raw)
+    const header = new TextEncoder().encode('Mobica binary STL - compressed geometry')
+    new Uint8Array(raw, 0, header.length).set(header)
+    view.setUint32(80, triangles.length, true)
+    let offset = 84
+    for (const [a, b, c] of triangles) {
+      const normal = Vector3.Cross(b.subtract(a), c.subtract(a)).normalize()
+      for (const value of [normal.x, normal.y, normal.z, a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z]) {
+        view.setFloat32(offset, value, true); offset += 4
+      }
+      view.setUint16(offset, 0, true); offset += 2
+    }
+    const blob = new Blob([raw], { type: 'model/stl' })
+    const compressed = await gzipBlob(blob)
+    downloadBlob(compressed, 'mobica-edited.stl.gz')
+    return { raw: blob.size, compressed: compressed.size }
+  }
+
+  const exportGLTF = async () => {
+    const ed = editorRef.current
+    const model = modelRef.current
+    if (!ed || !model) throw new Error('No model loaded')
+    const allowed = new Set<number>()
+    const walk = (node: Node) => {
+      if (model.deletedIds.has(node.uniqueId)) return
+      allowed.add(node.uniqueId)
+      childrenOf(node).forEach(walk)
+    }
+    model.roots.forEach(walk)
+    const result = await GLTF2Export.GLTFAsync(ed.scene, 'mobica-edited', {
+      shouldExportNode: node => allowed.has(node.uniqueId) && (!(node instanceof AbstractMesh) || node.isEnabled()),
+      meshCompressionMethod: 'Draco'
+    })
+    const entries = Object.entries(result.glTFFiles)
+    if (!entries.length) throw new Error('Babylon did not return glTF files')
+    for (const [name, value] of entries) {
+      const blob = value instanceof Blob ? value : new Blob([value], { type: name.endsWith('.gltf') ? 'model/gltf+json' : 'application/octet-stream' })
+      downloadBlob(blob, name.split('/').pop() || name)
+    }
+  }
+
+  const exportModel = async () => {
     if (!editorRef.current || !modelRef.current) return
-    setBusy(true); setStatus('Exporting visible model…')
+    setBusy(true)
     try {
-      const blob = await exportSceneBlob('mobica-edited')
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url; a.download = 'mobica-edited.glb'; a.click()
-      URL.revokeObjectURL(url)
-      setStatus(`Compressed GLB exported · ${(blob.size / 1024 / 1024).toFixed(2)} MB`)
-    } catch (err) { setStatus(`Export error: ${String(err)}`); console.error(err) }
-    finally { setBusy(false) }
+      if (exportFormat === 'glb') {
+        setStatus('Exporting Draco-compressed GLB…')
+        const blob = await exportSceneBlob('mobica-edited')
+        downloadBlob(blob, 'mobica-edited.glb')
+        setStatus(`Draco-compressed GLB exported · ${(blob.size / 1024 / 1024).toFixed(2)} MB`)
+      } else if (exportFormat === 'gltf') {
+        setStatus('Exporting Draco-compressed glTF assets…')
+        await exportGLTF()
+        setStatus('Draco-compressed glTF exported · keep all downloaded files together')
+      } else if (exportFormat === 'obj') {
+        setStatus('Compressing OBJ geometry with gzip…')
+        const result = await exportOBJ()
+        setStatus(`OBJ exported · ${(result.compressed / 1024 / 1024).toFixed(2)} MB gzip (from ${(result.raw / 1024 / 1024).toFixed(2)} MB)`)
+      } else {
+        setStatus('Creating and compressing binary STL…')
+        const result = await exportSTL()
+        setStatus(`Binary STL exported · ${(result.compressed / 1024 / 1024).toFixed(2)} MB gzip (from ${(result.raw / 1024 / 1024).toFixed(2)} MB)`)
+      }
+    } catch (err) {
+      setStatus(`Export error: ${String(err)}`)
+      console.error(err)
+    } finally { setBusy(false) }
   }
 
   const createShareLink = async () => {
@@ -968,7 +1103,7 @@ function EditorApp() {
 
   return <div className="app">
     <header className="topbar"><div className="brand"><div><strong>MOBICA</strong><small>3D MATERIAL STUDIO</small></div></div>
-      <div className="toolbar"><button className="btn historyBtn" onClick={undo} disabled={!undoCount || busy} title="Undo (last 10 hide/delete actions)"><Undo2 size={15}/> Undo</button><button className="btn historyBtn" onClick={redo} disabled={!redoCount || busy} title="Redo"><Redo2 size={15}/> Redo</button><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><button className="btn" onClick={exportGLB} disabled={!filename || busy}><Download size={16}/> Export GLB</button><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
+      <div className="toolbar"><button className="btn historyBtn" onClick={undo} disabled={!undoCount || busy} title="Undo (last 10 hide/delete actions)"><Undo2 size={15}/> Undo</button><button className="btn historyBtn" onClick={redo} disabled={!redoCount || busy} title="Redo"><Redo2 size={15}/> Redo</button><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><select className="btn exportFormat" aria-label="Export format" value={exportFormat} onChange={e => setExportFormat(e.target.value as 'glb' | 'gltf' | 'obj' | 'stl')} disabled={!filename || busy}><option value="glb">GLB · Draco</option><option value="gltf">glTF · Draco</option><option value="obj">OBJ · Gzip</option><option value="stl">STL · Gzip</option></select><button className="btn" onClick={exportModel} disabled={!filename || busy}><Download size={16}/> Export {exportFormat.toUpperCase()}</button><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
     <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size}><EyeOff size={14}/> Hide selected</button></div>
       <div className="cutawayControl"><label><input type="checkbox" checked={autoCutaway} onChange={e => setAutoCutaway(e.target.checked)} /> <span>Automatic room cutaway</span></label><small>Fades the two camera-facing wall groups and ceiling from above. In SolidWorks, name components WALL_FRONT, WALL_BACK, WALL_LEFT, WALL_RIGHT and CEILING. Put wall-mounted objects inside their wall component so they fade with it.</small></div>
       <div className="layerSearch">
