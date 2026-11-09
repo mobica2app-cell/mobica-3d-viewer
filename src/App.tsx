@@ -983,11 +983,15 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const [info, setInfo] = useState<ShareInfo | null>(null)
   const [error, setError] = useState('')
   const [remaining, setRemaining] = useState('')
-  const [activeTab, setActiveTab] = useState<'full' | 'studio'>('studio')
+  const [activeTab, setActiveTab] = useState<'visible' | 'all'>('visible')
   const [previewReady, setPreviewReady] = useState(false)
   const [previewProgress, setPreviewProgress] = useState('Preparing model preview…')
   const cameraRef = useRef<ArcRotateCamera | null>(null)
   const sharedEditorRef = useRef<Editor | null>(null)
+  const sharedVariantsRef = useRef<{
+    visible: { roots: Node[]; walls: CutawayWall[]; materials: Map<number, CutawayMaterial>; center: Vector3; size: Vector3 }
+    all: { roots: Node[]; walls: CutawayWall[]; materials: Map<number, CutawayMaterial>; center: Vector3; size: Vector3 }
+  } | null>(null)
 
   useEffect(() => {
     const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
@@ -1026,10 +1030,9 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     return () => window.clearInterval(timer)
   }, [info])
 
-  // The share page uses the same Babylon scene setup and the exact same live
-  // automatic-cutaway calculation as the studio. The full GLB retains the
-  // original hierarchy, so wall groups can be detected and faded dynamically
-  // as the viewer rotates the camera.
+  // Both shared tabs use the same live camera-driven cutaway. They differ only
+  // in which exported model variant is enabled: visible excludes manually hidden
+  // layers, while all includes them.
   useEffect(() => {
     if (!info || !canvasRef.current) return
     const canvas = canvasRef.current
@@ -1061,65 +1064,80 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
       cutawayCenter: Vector3.Zero(), cutawaySize: Vector3.One()
     }
     sharedEditorRef.current = sharedEd
+    sharedVariantsRef.current = null
     let disposed = false
 
-    const loadModel = async () => {
+    const loadVariant = async (url: string, suffix: string) => {
+      const result = await SceneLoader.ImportMeshAsync('', '', url, scene, undefined, '.glb')
+      const imported: Node[] = [...result.transformNodes, ...result.meshes]
+      const importedIds = new Set(imported.map(node => node.uniqueId))
+      const roots = imported.filter(node => !node.parent || !importedIds.has(node.parent.uniqueId))
+      const walls = collectCutawayWalls(roots)
+      const materials = new Map<number, CutawayMaterial>()
+      for (const wall of walls) {
+        for (const mesh of wall.meshes) {
+          if (!mesh.material) continue
+          const original = mesh.material
+          const faded = original.clone(`${original.name || 'material'}_${suffix}_cutaway_${mesh.uniqueId}`)
+          if (!faded) continue
+          const baseAlpha = original.alpha
+          faded.alpha = baseAlpha
+          faded.transparencyMode = Material.MATERIAL_ALPHABLEND
+          mesh.material = faded
+          materials.set(mesh.uniqueId, { mesh, original, faded, baseAlpha })
+        }
+      }
+      const geometry = result.meshes.filter(mesh => mesh.getTotalVertices() > 0)
+      let min = new Vector3(Infinity, Infinity, Infinity)
+      let max = new Vector3(-Infinity, -Infinity, -Infinity)
+      for (const mesh of geometry) {
+        mesh.computeWorldMatrix(true)
+        const bounds = mesh.getBoundingInfo().boundingBox
+        min = Vector3.Minimize(min, bounds.minimumWorld)
+        max = Vector3.Maximize(max, bounds.maximumWorld)
+      }
+      const center = geometry.length ? min.add(max).scale(0.5) : Vector3.Zero()
+      const size = geometry.length ? max.subtract(min) : Vector3.One()
+      return { roots, walls, materials, center, size }
+    }
+
+    const activateVariant = (variant: NonNullable<typeof sharedVariantsRef.current>['visible']) => {
+      const variants = sharedVariantsRef.current
+      if (!variants) return
+      for (const root of [...variants.visible.roots, ...variants.all.roots]) root.setEnabled(false)
+      for (const root of variant.roots) root.setEnabled(true)
+      sharedEd.rootNodes = variant.roots
+      sharedEd.cutawayWalls = variant.walls
+      sharedEd.cutawayMaterials = variant.materials
+      sharedEd.cutawayCenter.copyFrom(variant.center)
+      sharedEd.cutawaySize.copyFrom(variant.size)
+      sharedEd.cutawayEnabled = true
+    }
+
+    const loadModels = async () => {
       try {
         setPreviewReady(false)
-        setPreviewProgress('Loading shared model…')
-        const result = await SceneLoader.ImportMeshAsync('', '', info.fullUrl, scene, undefined, '.glb')
+        setPreviewProgress('Loading both shared model versions…')
+        const [visible, all] = await Promise.all([
+          loadVariant(info.visibleUrl, 'visible'),
+          loadVariant(info.fullUrl, 'all')
+        ])
         if (disposed) return
-        const imported: Node[] = [...result.transformNodes, ...result.meshes]
-        const importedIds = new Set(imported.map(node => node.uniqueId))
-        const roots = imported.filter(node => !node.parent || !importedIds.has(node.parent.uniqueId))
-        sharedEd.rootNodes = roots
-        sharedEd.cutawayWalls = collectCutawayWalls(roots)
-        sharedEd.cutawayMaterials.clear()
-        for (const wall of sharedEd.cutawayWalls) {
-          for (const mesh of wall.meshes) {
-            if (!mesh.material) continue
-            const original = mesh.material
-            const faded = original.clone(`${original.name || 'material'}_shared_cutaway_${mesh.uniqueId}`)
-            if (!faded) continue
-            const baseAlpha = original.alpha
-            faded.alpha = baseAlpha
-            faded.transparencyMode = Material.MATERIAL_ALPHABLEND
-            mesh.material = faded
-            sharedEd.cutawayMaterials.set(mesh.uniqueId, { mesh, original, faded, baseAlpha })
-          }
-        }
-        const geometry = result.meshes.filter(mesh => mesh.getTotalVertices() > 0)
-        if (geometry.length) {
-          let min = new Vector3(Infinity, Infinity, Infinity)
-          let max = new Vector3(-Infinity, -Infinity, -Infinity)
-          for (const mesh of geometry) {
-            mesh.computeWorldMatrix(true)
-            const bounds = mesh.getBoundingInfo().boundingBox
-            min = Vector3.Minimize(min, bounds.minimumWorld)
-            max = Vector3.Maximize(max, bounds.maximumWorld)
-          }
-          const size = max.subtract(min)
-          const center = min.add(max).scale(0.5)
-          sharedEd.cutawayCenter.copyFrom(center)
-          sharedEd.cutawaySize.copyFrom(size)
-          camera.setTarget(center)
-          camera.radius = Math.max(size.length() * 0.75, 0.5)
-          camera.maxZ = Math.max(camera.radius * 100, 100)
-          camera.wheelPrecision = Math.max(10, camera.radius * 8)
-        }
-        if (!sharedEd.cutawayWalls.length) {
-          setPreviewProgress('Model loaded · no wall groups detected. Name wall groups WALL_FRONT, WALL_BACK, WALL_LEFT, WALL_RIGHT and CEILING to enable automatic cutaway.')
-        } else {
-          setPreviewProgress('Studio view ready')
-        }
-        sharedEd.cutawayEnabled = activeTab === 'studio'
+        sharedVariantsRef.current = { visible, all }
+        camera.setTarget(visible.center)
+        camera.radius = Math.max(visible.size.length() * 0.75, 0.5)
+        camera.maxZ = Math.max(camera.radius * 100, 100)
+        camera.wheelPrecision = Math.max(10, camera.radius * 8)
+        activateVariant(activeTab === 'all' ? all : visible)
+        const activeWalls = visible.walls
+        setPreviewProgress(activeWalls.length ? 'Studio cutaway ready' : 'Model loaded · no wall groups detected for automatic cutaway.')
         setPreviewReady(true)
       } catch (err) {
         if (!disposed) setError(`Could not load shared model: ${String(err)}`)
       }
     }
 
-    void loadModel()
+    void loadModels()
     engine.runRenderLoop(() => {
       if (sharedEd.cutawayEnabled && sharedEd.cutawayWalls.length) {
         updateAutomaticCutaway(sharedEd, sharedEd.cutawayCenter, sharedEd.cutawaySize)
@@ -1131,6 +1149,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     return () => {
       disposed = true
       sharedEditorRef.current = null
+      sharedVariantsRef.current = null
       cameraRef.current = null
       window.removeEventListener('resize', resize)
       engine.dispose()
@@ -1138,21 +1157,26 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   }, [info])
 
   useEffect(() => {
+    const variants = sharedVariantsRef.current
     const sharedEd = sharedEditorRef.current
-    if (!sharedEd || !previewReady) return
-    const studioView = activeTab === 'studio'
-    sharedEd.cutawayEnabled = studioView
-    if (!studioView) {
-      for (const entry of sharedEd.cutawayMaterials.values()) entry.faded.alpha = entry.baseAlpha
-    }
+    if (!variants || !sharedEd || !previewReady) return
+    const variant = activeTab === 'all' ? variants.all : variants.visible
+    for (const root of [...variants.visible.roots, ...variants.all.roots]) root.setEnabled(false)
+    for (const root of variant.roots) root.setEnabled(true)
+    sharedEd.rootNodes = variant.roots
+    sharedEd.cutawayWalls = variant.walls
+    sharedEd.cutawayMaterials = variant.materials
+    sharedEd.cutawayCenter.copyFrom(variant.center)
+    sharedEd.cutawaySize.copyFrom(variant.size)
+    sharedEd.cutawayEnabled = true
   }, [activeTab, previewReady])
 
   return <div className="sharedPage">
     <header className="sharedHeader">
       <div className="brand"><div><strong>MOBICA</strong><small>3D MODEL PREVIEW</small></div></div>
       <div className="sharedTabs">
-        <button className={activeTab === 'studio' ? 'active' : ''} onClick={() => setActiveTab('studio')} disabled={!previewReady}>Studio view</button>
-        <button className={activeTab === 'full' ? 'active' : ''} onClick={() => setActiveTab('full')} disabled={!previewReady}>Full model</button>
+        <button className={activeTab === 'visible' ? 'active' : ''} onClick={() => setActiveTab('visible')} disabled={!previewReady}>Hidden layers off</button>
+        <button className={activeTab === 'all' ? 'active' : ''} onClick={() => setActiveTab('all')} disabled={!previewReady}>Hidden layers on</button>
       </div>
       <div className="sharedMeta"><span><Clock size={14}/> {remaining || 'Checking expiry…'}</span><span className="readOnlyTag">READ ONLY</span></div>
     </header>
