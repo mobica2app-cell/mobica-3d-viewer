@@ -149,9 +149,19 @@ function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, modelSize: Vec
   const cameraPosition = ed.camera.position
   const cameraDirection = new Vector3(cameraPosition.x - modelCenter.x, 0, cameraPosition.z - modelCenter.z)
   if (cameraDirection.lengthSquared() > 1e-6) cameraDirection.normalize()
-  const sideWalls = ed.cutawayWalls.filter(wall => !wall.ceiling).map(wall => ({ wall, score: Vector3.Dot(new Vector3(wall.center.x - modelCenter.x, 0, wall.center.z - modelCenter.z).normalize(), cameraDirection) })).sort((a, b) => b.score - a.score)
-  const selectedSides = new Set(sideWalls.filter(item => item.score > 0.22).slice(0, 2).map(item => item.wall))
-  const lookingFromAbove = cameraPosition.y > modelCenter.y + Math.max(modelSize.y * 0.38, 0.25)
+  const sideWalls = ed.cutawayWalls
+    .filter(wall => !wall.ceiling)
+    .map(wall => {
+      const offset = new Vector3(wall.center.x - modelCenter.x, 0, wall.center.z - modelCenter.z)
+      const score = offset.lengthSquared() > 1e-6 ? Vector3.Dot(offset.normalize(), cameraDirection) : -1
+      return { wall, score }
+    })
+    .sort((a, b) => b.score - a.score)
+  // Always fade the two most camera-facing side walls.
+  const selectedSides = new Set(sideWalls.slice(0, 2).map(item => item.wall))
+  // ArcRotateCamera.beta is measured from vertical; small beta means top-down.
+  // Camera height alone changes with radius and caused false ceiling fading.
+  const lookingFromAbove = ed.camera.beta < 0.9
   const targets = new Map<number, number>()
   for (const wall of ed.cutawayWalls) {
     const shouldFade = wall.ceiling ? lookingFromAbove : selectedSides.has(wall)
