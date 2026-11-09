@@ -192,6 +192,7 @@ function EditorApp() {
   const [layerSearch, setLayerSearch] = useState('')
   const [busy, setBusy] = useState(false)
   const [exportFormat, setExportFormat] = useState<'glb' | 'gltf' | 'obj' | 'stl'>('glb')
+  const [exportSizes, setExportSizes] = useState<Record<string, number> | null>(null)
   const [status, setStatus] = useState('Upload a GLB model to begin')
   const [filename, setFilename] = useState('')
   const [exposure, setExposure] = useState(1)
@@ -880,9 +881,17 @@ function EditorApp() {
       childrenOf(node).forEach(walk)
     }
     model.roots.forEach(walk)
+    const hasExcludedAncestor = (node: Node) => {
+      let parent = node.parent
+      while (parent) {
+        if (model.deletedIds.has(parent.uniqueId) || model.hiddenIds.has(parent.uniqueId)) return true
+        parent = parent.parent
+      }
+      return false
+    }
     return [...(editorRef.current?.scene.meshes ?? [])].filter(mesh =>
       allowed.has(mesh.uniqueId) && mesh.isEnabled() && mesh.getTotalVertices() > 0 &&
-      ![...mesh.getAncestors()].some(parent => model.deletedIds.has(parent.uniqueId) || model.hiddenIds.has(parent.uniqueId))
+      !hasExcludedAncestor(mesh)
     )
   }
 
@@ -911,8 +920,7 @@ function EditorApp() {
     if (vertexOffset === 1) throw new Error('No visible geometry to export')
     const raw = new Blob([lines.join('\n')], { type: 'text/plain' })
     const compressed = await gzipBlob(raw)
-    downloadBlob(compressed, 'mobica-edited.obj.gz')
-    return { raw: raw.size, compressed: compressed.size }
+    return { raw: raw.size, compressed }
   }
 
   const exportSTL = async () => {
@@ -949,8 +957,7 @@ function EditorApp() {
     }
     const blob = new Blob([raw], { type: 'model/stl' })
     const compressed = await gzipBlob(blob)
-    downloadBlob(compressed, 'mobica-edited.stl.gz')
-    return { raw: blob.size, compressed: compressed.size }
+    return { raw: blob.size, compressed }
   }
 
   const exportGLTF = async () => {
@@ -970,9 +977,33 @@ function EditorApp() {
     })
     const entries = Object.entries(result.glTFFiles)
     if (!entries.length) throw new Error('Babylon did not return glTF files')
-    for (const [name, value] of entries) {
-      const blob = value instanceof Blob ? value : new Blob([value], { type: name.endsWith('.gltf') ? 'model/gltf+json' : 'application/octet-stream' })
-      downloadBlob(blob, name.split('/').pop() || name)
+    return entries.map(([name, value]) => ({
+      name: name.split('/').pop() || name,
+      blob: value instanceof Blob ? value : new Blob([value], { type: name.endsWith('.gltf') ? 'model/gltf+json' : 'application/octet-stream' })
+    }))
+  }
+
+  const prepareExportSizes = async () => {
+    if (!editorRef.current || !modelRef.current) return
+    setBusy(true)
+    setStatus('Calculating compressed sizes for all export formats…')
+    try {
+      const sizes: Record<string, number> = {}
+      const glb = await exportSceneBlob('mobica-edited')
+      sizes.glb = glb.size
+      const gltfFiles = await exportGLTF()
+      sizes.gltf = gltfFiles.reduce((sum, file) => sum + file.blob.size, 0)
+      const obj = await exportOBJ()
+      sizes.obj = obj.compressed.size
+      const stl = await exportSTL()
+      sizes.stl = stl.compressed.size
+      setExportSizes(sizes)
+      setStatus('Export size estimates ready')
+    } catch (err) {
+      setStatus(`Could not calculate export sizes: ${String(err)}`)
+      console.error(err)
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -992,11 +1023,13 @@ function EditorApp() {
       } else if (exportFormat === 'obj') {
         setStatus('Compressing OBJ geometry with gzip…')
         const result = await exportOBJ()
-        setStatus(`OBJ exported · ${(result.compressed / 1024 / 1024).toFixed(2)} MB gzip (from ${(result.raw / 1024 / 1024).toFixed(2)} MB)`)
+        downloadBlob(result.compressed, 'mobica-edited.obj.gz')
+        setStatus(`OBJ exported · ${(result.compressed.size / 1024 / 1024).toFixed(2)} MB gzip (from ${(result.raw / 1024 / 1024).toFixed(2)} MB)`)
       } else {
         setStatus('Creating and compressing binary STL…')
         const result = await exportSTL()
-        setStatus(`Binary STL exported · ${(result.compressed / 1024 / 1024).toFixed(2)} MB gzip (from ${(result.raw / 1024 / 1024).toFixed(2)} MB)`)
+        downloadBlob(result.compressed, 'mobica-edited.stl.gz')
+        setStatus(`Binary STL exported · ${(result.compressed.size / 1024 / 1024).toFixed(2)} MB gzip (from ${(result.raw / 1024 / 1024).toFixed(2)} MB)`)
       }
     } catch (err) {
       setStatus(`Export error: ${String(err)}`)
@@ -1103,7 +1136,7 @@ function EditorApp() {
 
   return <div className="app">
     <header className="topbar"><div className="brand"><div><strong>MOBICA</strong><small>3D MATERIAL STUDIO</small></div></div>
-      <div className="toolbar"><button className="btn historyBtn" onClick={undo} disabled={!undoCount || busy} title="Undo (last 10 hide/delete actions)"><Undo2 size={15}/> Undo</button><button className="btn historyBtn" onClick={redo} disabled={!redoCount || busy} title="Redo"><Redo2 size={15}/> Redo</button><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><select className="btn exportFormat" aria-label="Export format" value={exportFormat} onChange={e => setExportFormat(e.target.value as 'glb' | 'gltf' | 'obj' | 'stl')} disabled={!filename || busy}><option value="glb">GLB · Draco</option><option value="gltf">glTF · Draco</option><option value="obj">OBJ · Gzip</option><option value="stl">STL · Gzip</option></select><button className="btn" onClick={exportModel} disabled={!filename || busy}><Download size={16}/> Export {exportFormat.toUpperCase()}</button><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
+      <div className="toolbar"><button className="btn historyBtn" onClick={undo} disabled={!undoCount || busy} title="Undo (last 10 hide/delete actions)"><Undo2 size={15}/> Undo</button><button className="btn historyBtn" onClick={redo} disabled={!redoCount || busy} title="Redo"><Redo2 size={15}/> Redo</button><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><select className="btn exportFormat" aria-label="Export format" value={exportFormat} onChange={e => setExportFormat(e.target.value as 'glb' | 'gltf' | 'obj' | 'stl')} disabled={!filename || busy}><option value="glb">GLB · Draco</option><option value="gltf">glTF · Draco</option><option value="obj">OBJ · Gzip</option><option value="stl">STL · Gzip</option></select><button className="btn" onClick={prepareExportSizes} disabled={!filename || busy}>Preview export sizes</button><button className="btn" onClick={exportModel} disabled={!filename || busy}><Download size={16}/> Export {exportFormat.toUpperCase()}</button><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
     <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size}><EyeOff size={14}/> Hide selected</button></div>
       <div className="cutawayControl"><label><input type="checkbox" checked={autoCutaway} onChange={e => setAutoCutaway(e.target.checked)} /> <span>Automatic room cutaway</span></label><small>Fades the two camera-facing wall groups and ceiling from above. In SolidWorks, name components WALL_FRONT, WALL_BACK, WALL_LEFT, WALL_RIGHT and CEILING. Put wall-mounted objects inside their wall component so they fade with it.</small></div>
       <div className="layerSearch">
@@ -1118,6 +1151,7 @@ function EditorApp() {
       <div className="editorSection"><div className="editorSectionTitle">Material</div><label className="field">Base color<input type="color" value={color} onChange={e => updateColor(e.target.value)}/></label><label className="field">Roughness <span>{roughness.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={roughness} onChange={e => updateRoughness(Number(e.target.value))}/></label><label className="field">Metallic <span>{metallic.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={metallic} onChange={e => updateMetallic(Number(e.target.value))}/></label><label className="field">Opacity <span>{Math.round(opacity * 100)}%</span><input type="range" min="0.1" max="1" step="0.01" value={opacity} onChange={e => updateOpacity(Number(e.target.value))}/></label><label className="btn full"><Upload size={15}/> Replace base-color texture<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateTexture(f); e.target.value = '' }}/></label><p className="hint">Texture placement uses the selected mesh's original UV coordinates.</p></div><div className="editorSection"><div className="editorSectionTitle"><Scissors size={14}/> Interactive mesh cut</div><p className="hint">Select the combined wall mesh, start drawing, then drag a line across the model from one edge to the opposite edge. The line defines the cutting plane from your current camera view.</p>{!cutDrawMode ? <button className="btn full" onClick={startDrawCut} disabled={!chosen()}><Scissors size={14}/> Draw cut on model</button> : <><div className="cutModeNotice">Cut mode active — drag across the selected mesh</div><button className="btn full" onClick={cancelDrawCut}><X size={14}/> Cancel cut</button></>}<p className="hint">Repeat on each new piece to separate all four walls. The cut creates two independently selectable mesh surfaces; it does not add closed caps.</p></div></> : <p className="hint">Select a layer or click any visible part of the model.</p>}
       <div className="separator"/><div className="panelTitle">Lighting & quality</div><label className="field">Brightness <span>{exposure.toFixed(2)}×</span><input aria-label="Brightness" type="range" min="0.35" max="1.8" step="0.05" value={exposure} onChange={e => { const n = Number(e.target.value); setExposure(n); if (editorRef.current) editorRef.current.scene.imageProcessingConfiguration.exposure = n }}/></label><label className="field">Environment light <span>{environment.toFixed(2)}</span><input aria-label="Environment light" type="range" min="0" max="1.2" step="0.02" value={environment} onChange={e => { const n = Number(e.target.value); setEnvironment(n); if (editorRef.current) editorRef.current.scene.environmentIntensity = n }}/></label><label className="field">Render quality <span>{quality}%</span><input aria-label="Render quality" type="range" min="25" max="100" step="5" value={quality} onChange={e => updateQuality(Number(e.target.value))}/></label><p className="hint">Higher quality increases internal render resolution and texture filtering. It may use more GPU memory and reduce frame rate on slower devices.</p><button className="btn full" onClick={() => { setExposure(1); setEnvironment(0.32); updateQuality(75); if (editorRef.current) { editorRef.current.scene.imageProcessingConfiguration.exposure = 1; editorRef.current.scene.environmentIntensity = 0.32 } }}><RotateCcw size={14}/> Reset lighting & quality</button><p className="hint">Adjust brightness independently from environment reflections and render quality.</p></aside></main>
     {shareUrl && <div className="shareOverlay"><div className="shareDialog"><button className="shareClose" onClick={() => setShareUrl('')}>×</button><div className="shareIcon"><Share2 size={22}/></div><h2>Share model</h2><p>Two versions are included: the full model (with hidden layers restored, but deleted layers removed) and the visible-only model. Editing is disabled.</p><div className="shareUrl">{shareUrl}<button className="iconBtn" title="Copy link" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={16}/></button></div><div className="shareExpiry"><Clock size={15}/> Link expires in <strong>{shareRemaining || '3d 0h 0m 0s'}</strong></div><div className="shareActions"><button className="btn primary" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={15}/> Copy link</button><button className="btn" onClick={() => window.open(shareUrl, '_blank', 'noopener,noreferrer')}><ExternalLink size={15}/> Preview</button></div></div></div>}
+    {exportSizes && <div className="shareOverlay"><div className="shareDialog exportSizeDialog"><button className="shareClose" onClick={() => setExportSizes(null)}>×</button><div className="shareIcon"><Download size={22}/></div><h2>Estimated export sizes</h2><p>These are calculated from the current model and current hidden/deleted layer state. glTF shows the combined size of all related files.</p><div className="exportSizeRows">{(['glb','gltf','obj','stl'] as const).map(format => <div className="exportSizeRow" key={format}><strong>{format.toUpperCase()}</strong><span>{(exportSizes[format] / 1024 / 1024).toFixed(2)} MB</span></div>)}</div><div className="shareActions"><button className="btn" onClick={() => setExportSizes(null)}>Close</button><button className="btn primary" onClick={() => { setExportSizes(null); void exportModel() }}>Export selected · {exportFormat.toUpperCase()}</button></div></div></div>}
   </div>
 }
 
