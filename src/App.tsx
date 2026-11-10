@@ -7,9 +7,10 @@ import { Upload, Eye, EyeOff, Trash2, Download, Layers, Paintbrush, RotateCcw, B
 import './styles.css'
 
 type Item = { id: number; name: string; depth: number; visible: boolean; hasMesh: boolean; parentId: number | null }
-type CutawayWall = { name: string; meshes: AbstractMesh[]; center: Vector3; direction: Vector3 }
+type CutawayWall = { name: string; root: Node; meshes: AbstractMesh[]; center: Vector3; direction: Vector3 }
 type CutawayMaterial = { mesh: AbstractMesh; original: Material; faded: Material; baseAlpha: number }
-type Editor = { scene: Scene; camera: ArcRotateCamera; highlight: HighlightLayer; nodes: Map<number, Node>; rootNodes: Node[]; cutawayWalls: CutawayWall[]; cutawayMaterials: Map<number, CutawayMaterial>; cutawayEnabled: boolean; cutawayCenter: Vector3; cutawaySize: Vector3 }
+const cutawayBaseVisibility = new WeakMap<AbstractMesh, boolean>()
+type Editor = { scene: Scene; camera: ArcRotateCamera; highlight: HighlightLayer; nodes: Map<number, Node>; rootNodes: Node[]; cutawayWalls: CutawayWall[]; cutawayMaterials: Map<number, CutawayMaterial>; cutawayEnabled: boolean; activeCutawaySignature: string; cutawayCenter: Vector3; cutawaySize: Vector3 }
 type ModelSnapshot = { hiddenIds: Set<number>; deletedIds: Set<number>; activeGeneratedIds: Set<number> }
 
 function childrenOf(node: Node): Node[] { return node.getChildren(undefined, true) }
@@ -130,6 +131,8 @@ function collectCutawayWalls(nodes: Node[]): CutawayWall[] {
   for (const node of topWallNodes) {
     const meshes = findMeshes(node).filter(mesh => mesh.getTotalVertices() > 0)
     if (!meshes.length) continue
+    // Cache every descendant's initial visibility once; the complete wall group is toggled from this stored list.
+    for (const mesh of meshes) if (!cutawayBaseVisibility.has(mesh)) cutawayBaseVisibility.set(mesh, mesh.isVisible)
     let min = new Vector3(Infinity, Infinity, Infinity)
     let max = new Vector3(-Infinity, -Infinity, -Infinity)
     for (const mesh of meshes) {
@@ -139,35 +142,40 @@ function collectCutawayWalls(nodes: Node[]): CutawayWall[] {
       max = Vector3.Maximize(max, box.maximumWorld)
     }
     const center = min.add(max).scale(0.5)
-    candidates.push({ name: node.name || 'Wall', meshes, center, direction: Vector3.Zero() })
+    candidates.push({ name: node.name || 'Wall', root: node, meshes, center, direction: Vector3.Zero() })
   }
   return candidates
 }
 
-function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, modelSize: Vector3) {
+function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, _modelSize: Vector3) {
+  // Wall membership and mesh references are collected once when the GLB loads.
+  // During camera movement we only compare the four wall groups; meshes are
+  // touched only when the set of hidden walls actually changes.
   const cameraPosition = ed.camera.position
   const cameraDirection = new Vector3(cameraPosition.x - modelCenter.x, 0, cameraPosition.z - modelCenter.z)
   if (cameraDirection.lengthSquared() > 1e-6) cameraDirection.normalize()
-  const sideWalls = ed.cutawayWalls
+  const selectedSides = ed.cutawayWalls
     .map(wall => {
       const offset = new Vector3(wall.center.x - modelCenter.x, 0, wall.center.z - modelCenter.z)
       const score = offset.lengthSquared() > 1e-6 ? Vector3.Dot(offset.normalize(), cameraDirection) : -1
       return { wall, score }
     })
     .sort((a, b) => b.score - a.score)
-  // Fade the two most camera-facing wall groups. Everything placed inside a wall group fades with it.
-  const selectedSides = new Set(sideWalls.slice(0, 2).map(item => item.wall))
-  const targets = new Map<number, number>()
+    .slice(0, 2)
+    .map(item => item.wall)
+  const hidden = new Set(selectedSides)
+  const signature = selectedSides.map(wall => String(wall.root.uniqueId)).sort().join('|')
+  if (signature === ed.activeCutawaySignature) return
+  ed.activeCutawaySignature = signature
+
+  // Apply the visibility change to every mesh in a wall group in the same JS
+  // task. No per-frame material cloning/fading and no parent/transform changes.
   for (const wall of ed.cutawayWalls) {
-    const shouldFade = selectedSides.has(wall)
-    for (const mesh of wall.meshes) targets.set(mesh.uniqueId, shouldFade ? 0.08 : 1)
-  }
-  for (const [id, target] of targets) {
-    const entry = ed.cutawayMaterials.get(id)
-    if (!entry) continue
-    const current = entry.faded.alpha
-    const next = current + (target - current) * 0.16
-    entry.faded.alpha = Math.abs(target - next) < 0.008 ? target : next
+    const hideWall = hidden.has(wall)
+    for (const mesh of wall.meshes) {
+      const nextVisible = hideWall ? false : (cutawayBaseVisibility.get(mesh) ?? true)
+      if (mesh.isVisible !== nextVisible) mesh.isVisible = nextVisible
+    }
   }
 }
 
@@ -178,7 +186,8 @@ function EditorApp() {
   const modelRef = useRef<{ roots: Node[]; fileName: string; hiddenIds: Set<number>; deletedIds: Set<number>; generatedIds: Set<number>; activeGeneratedIds: Set<number> } | null>(null)
   const [items, setItems] = useState<Item[]>([])
   const [selected, setSelected] = useState<number | null>(null)
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set()) // sidebar checkbox selection for actions
+  const [highlightedIds, setHighlightedIds] = useState<Set<number>>(new Set()) // 3D/layer focus selection only
   const [marquee, setMarquee] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
   const [renamingId, setRenamingId] = useState<number | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -186,6 +195,7 @@ function EditorApp() {
   const [moveLayerQuery, setMoveLayerQuery] = useState('')
   const [movePickerOpen, setMovePickerOpen] = useState(false)
   const selectedIdsRef = useRef<Set<number>>(new Set())
+  const highlightedIdsRef = useRef<Set<number>>(new Set())
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [layerSearch, setLayerSearch] = useState('')
   const [busy, setBusy] = useState(false)
@@ -202,7 +212,8 @@ function EditorApp() {
     const ed = editorRef.current
     if (!ed) return
     ed.cutawayEnabled = autoCutaway
-    if (!autoCutaway) for (const entry of ed.cutawayMaterials.values()) entry.faded.alpha = entry.baseAlpha
+    ed.activeCutawaySignature = ''
+    if (!autoCutaway) for (const wall of ed.cutawayWalls) for (const mesh of wall.meshes) { const visible = cutawayBaseVisibility.get(mesh) ?? true; if (mesh.isVisible !== visible) mesh.isVisible = visible }
   }, [autoCutaway])
   const [color, setColor] = useState('#ffffff')
   const [roughness, setRoughness] = useState(0.75)
@@ -454,12 +465,12 @@ function EditorApp() {
   }
   const select = (id: number | null, additive = false) => {
     const targetIds = id == null ? [] : [id]
-    const current = selectedIdsRef.current
+    const current = highlightedIdsRef.current
     const next = additive && id != null
       ? targetIds.reduce((set, targetId) => { set.has(targetId) ? set.delete(targetId) : set.add(targetId); return set }, new Set(current))
       : id == null ? new Set<number>() : new Set(targetIds)
-    selectedIdsRef.current = next
-    setSelectedIds(next)
+    highlightedIdsRef.current = next
+    setHighlightedIds(next)
     const primary = id != null && next.has(id) ? id : (next.values().next().value ?? null)
     setSelected(primary)
     const ed = editorRef.current
@@ -480,6 +491,9 @@ function EditorApp() {
   }
   const focusLayer = (id: number | null) => {
     setSelected(id)
+    const nextHighlight = id == null ? new Set<number>() : new Set([id])
+    highlightedIdsRef.current = nextHighlight
+    setHighlightedIds(nextHighlight)
     const ed = editorRef.current
     if (!ed) return
     ed.highlight.removeAllMeshes()
@@ -499,12 +513,39 @@ function EditorApp() {
     selectedIdsRef.current = next
     setSelectedIds(next)
   }
-  const clearManualSelection = () => {
-    selectedIdsRef.current = new Set()
-    setSelectedIds(new Set())
-    setSelected(null)
-    editorRef.current?.highlight.removeAllMeshes()
+  const expandSelectionOneLevel = () => {
+    const ed = editorRef.current
+    if (!ed || selected == null) return
+    const currentNode = ed.nodes.get(selected)
+    const parent = currentNode?.parent
+    if (!parent || !ed.nodes.has(parent.uniqueId)) return
+    const ids = descendants(parent).filter(node => ed.nodes.has(node.uniqueId)).map(node => node.uniqueId)
+    if (!ids.length) return
+    // Shift expands only the 3D highlight/focus selection. It never checks
+    // sidebar action checkboxes.
+    const next = new Set(highlightedIdsRef.current)
+    ids.forEach(id => next.add(id))
+    next.add(parent.uniqueId)
+    highlightedIdsRef.current = next
+    setHighlightedIds(next)
+    setSelected(parent.uniqueId)
+    ed.highlight.removeAllMeshes()
+    for (const id of next) {
+      const node = ed.nodes.get(id)
+      if (node) for (const mesh of findMeshes(node)) if (mesh instanceof Mesh && mesh.isEnabled()) ed.highlight.addMesh(mesh, new Color3(0.1, 0.75, 0.95))
+    }
+    setStatus(`Highlighted ${ids.length + 1} layers from ${parent.name || 'Unnamed group'} · ${next.size} highlighted`)
   }
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Shift' || event.repeat) return
+      const target = event.target as HTMLElement | null
+      if (target && (target.isContentEditable || /INPUT|TEXTAREA|SELECT/.test(target.tagName))) return
+      expandSelectionOneLevel()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [selected, items, highlightedIds])
 
   useEffect(() => {
     if (!canvasRef.current) return
@@ -534,7 +575,7 @@ function EditorApp() {
     scene.environmentTexture = env
     scene.environmentIntensity = 0.32
     const highlight = new HighlightLayer('selection', scene)
-    const ed: Editor = { scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [], cutawayMaterials: new Map(), cutawayEnabled: true, cutawayCenter: Vector3.Zero(), cutawaySize: Vector3.One() }
+    const ed: Editor = { scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [], cutawayMaterials: new Map(), cutawayEnabled: true, activeCutawaySignature: '', cutawayCenter: Vector3.Zero(), cutawaySize: Vector3.One() }
     editorRef.current = ed
     scene.onPointerObservable.add(info => {
       if (cutDrawModeRef.current) {
@@ -576,7 +617,10 @@ function EditorApp() {
       let current: Node | null = picked
       while (current && !ed.nodes.has(current.uniqueId)) current = current.parent
       const pointerEvent = info.event as PointerEvent | undefined
-      if (current) focusLayer(current.uniqueId)
+      if (current) {
+        if (pointerEvent?.ctrlKey || pointerEvent?.metaKey) select(current.uniqueId, true)
+        else focusLayer(current.uniqueId)
+      }
     })
     engine.runRenderLoop(() => {
       if (ed.cutawayEnabled && ed.cutawayWalls.length) updateAutomaticCutaway(ed, ed.cutawayCenter, ed.cutawaySize)
@@ -602,20 +646,17 @@ function EditorApp() {
       undoStackRef.current = []; redoStackRef.current = []; syncHistoryCounts()
       selectedIdsRef.current = new Set()
       setSelectedIds(new Set())
+      highlightedIdsRef.current = new Set()
+      setHighlightedIds(new Set())
       setSelected(null)
       ed.rootNodes = roots
       ed.cutawayWalls = collectCutawayWalls(roots)
       ed.cutawayMaterials.clear()
+      ed.activeCutawaySignature = ''
       for (const wall of ed.cutawayWalls) for (const mesh of wall.meshes) {
         if (!mesh.material) continue
         const original = mesh.material
-        const faded = original.clone(`${original.name || 'material'}_cutaway_${mesh.uniqueId}`)
-        if (!faded) continue
-        const baseAlpha = original.alpha
-        faded.alpha = baseAlpha
-        faded.transparencyMode = Material.MATERIAL_ALPHABLEND
-        mesh.material = faded
-        ed.cutawayMaterials.set(mesh.uniqueId, { mesh, original, faded, baseAlpha })
+        ed.cutawayMaterials.set(mesh.uniqueId, { mesh, original, faded: original, baseAlpha: original.alpha })
       }
       ed.cutawayEnabled = autoCutaway
       const boxMeshes = result.meshes.filter(m => m.getTotalVertices() > 0)
@@ -759,13 +800,10 @@ function EditorApp() {
       wallGroup.meshes = wallGroup.meshes.filter(mesh => mesh !== source)
       for (const part of parts) {
         wallGroup.meshes.push(part)
-        const faded = sourceCutawayMaterial.original.clone(`${sourceCutawayMaterial.original.name || 'material'}_cutaway_${part.uniqueId}`)
-        if (faded) {
-          faded.alpha = sourceCutawayMaterial.baseAlpha
-          faded.transparencyMode = Material.MATERIAL_ALPHABLEND
-          part.material = faded
-          ed.cutawayMaterials.set(part.uniqueId, { mesh: part, original: sourceCutawayMaterial.original, faded, baseAlpha: sourceCutawayMaterial.baseAlpha })
-        }
+        cutawayBaseVisibility.set(part, part.isVisible)
+        const original = part.material || sourceCutawayMaterial.original
+        part.material = original
+        ed.cutawayMaterials.set(part.uniqueId, { mesh: part, original, faded: original, baseAlpha: original.alpha })
       }
     }
     source.setEnabled(false)
@@ -1165,7 +1203,7 @@ function EditorApp() {
       while (p != null) { if (!expanded.has(p)) { shown = false; break }; p = items.find(n => n.id === p)?.parentId ?? null }
     }
     if (!shown) return null
-    return <div className={`layer ${selectedIds.has(item.id) ? 'active' : ''}`} key={item.id} style={{ paddingLeft: 12 + item.depth * 17 }}>
+    return <div className={`layer ${selectedIds.has(item.id) ? 'active' : ''} ${highlightedIds.has(item.id) || selected === item.id ? 'focused' : ''}`} key={item.id} style={{ paddingLeft: 12 + item.depth * 17 }}>
       <button className="chevron" onClick={() => { setExpanded(prev => { const n = new Set(prev); n.has(item.id) ? n.delete(item.id) : n.add(item.id); return n }) }}>
         {hasChildren ? expanded.has(item.id) ? <ChevronDown size={14}/> : <ChevronRight size={14}/> : <span style={{width:14}}/>}
       </button>
@@ -1203,7 +1241,7 @@ function EditorApp() {
   return <div className="app">
     <header className="topbar"><div className="brand"><div><strong>MOBICA</strong><small>3D MATERIAL STUDIO</small></div></div>
       <div className="toolbar"><button className="btn historyBtn" onClick={undo} disabled={!undoCount || busy} title="Undo (last 10 hide/delete actions)"><Undo2 size={15}/> Undo</button><button className="btn historyBtn" onClick={redo} disabled={!redoCount || busy} title="Redo"><Redo2 size={15}/> Redo</button><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><div className="exportDropdown"><div className="exportMainActions"><button className="btn primary" onClick={() => void exportModel('glb')} disabled={!filename || busy}><Download size={16}/> Download GLB</button><button className="btn exportChevron" aria-label="Show all export formats and sizes" title="Calculate all export sizes" onClick={() => { if (exportDropdownOpen) setExportDropdownOpen(false); else if (exportSizes) setExportDropdownOpen(true); else void prepareExportSizes() }} disabled={!filename || busy}><ChevronDown size={16}/></button></div>{exportDropdownOpen && <div className="exportDropdownMenu"><div className="exportDropdownTitle">Export formats <small>Compressed file sizes</small></div>{(['glb','gltf','obj','stl'] as const).map(format => <div className="exportDropdownRow" key={format}><div className="exportFormatInfo"><strong>{format.toUpperCase()}{format === 'glb' ? ' · Main' : ''}</strong><span>{exportSizes ? `${(exportSizes[format] / 1024 / 1024).toFixed(2)} MB` : 'Calculating…'}</span></div><button className="btn exportRowDownload" onClick={() => { setExportDropdownOpen(false); void exportModel(format) }} disabled={!exportSizes || busy}><Download size={14}/> Download</button></div>)}</div>}</div><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
-    <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size}><EyeOff size={14}/> Hide selected</button><button className="btn" onClick={clearManualSelection} disabled={!selectedIds.size}><X size={14}/> Unselect all</button></div><div className="layerMoveControls"><div className="movePicker"><input aria-label="Find destination layer" value={moveLayerQuery} onFocus={() => setMovePickerOpen(true)} onChange={e => { setMoveLayerQuery(e.target.value); setMovePickerOpen(true); setMoveTargetId('') }} placeholder={selectedIds.size ? `Find destination for ${selectedIds.size} selected…` : 'Select layers first'} disabled={!selectedIds.size}/>{moveTargetId && <button className="moveTargetClear" title="Clear destination" onClick={() => { setMoveTargetId(''); setMoveLayerQuery('') }}>×</button>}{movePickerOpen && selectedIds.size > 0 && <div className="movePickerResults">{items.filter(item => {
+    <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size}><EyeOff size={14}/> Hide selected</button></div><div className="layerMoveControls"><div className="movePicker"><input aria-label="Find destination layer" value={moveLayerQuery} onFocus={() => setMovePickerOpen(true)} onChange={e => { setMoveLayerQuery(e.target.value); setMovePickerOpen(true); setMoveTargetId('') }} placeholder={selectedIds.size ? `Find destination for ${selectedIds.size} selected…` : 'Select layers first'} disabled={!selectedIds.size}/>{moveTargetId && <button className="moveTargetClear" title="Clear destination" onClick={() => { setMoveTargetId(''); setMoveLayerQuery('') }}>×</button>}{movePickerOpen && selectedIds.size > 0 && <div className="movePickerResults">{items.filter(item => {
         if (selectedIds.has(item.id)) return false
         const node = editorRef.current?.nodes.get(item.id)
         if (!(node instanceof TransformNode)) return false
@@ -1218,7 +1256,7 @@ function EditorApp() {
         while (parentId != null) { const parentItem = items.find(candidate => candidate.id === parentId); if (parentItem) path.unshift(parentItem.name); parentId = parentItem?.parentId ?? null }
         return <button type="button" className={`movePickerOption ${moveTargetId === String(item.id) ? 'chosen' : ''}`} key={item.id} onClick={() => { setMoveTargetId(String(item.id)); setMoveLayerQuery(path.join(' / ')); setMovePickerOpen(false) }}><strong>{item.name}</strong><small>{path.join(' / ')}</small></button>
       })}{items.filter(item => !selectedIds.has(item.id)).length === 0 && <div className="movePickerEmpty">No valid destination layers</div>}</div>}</div><button className="btn" onClick={moveSelectedToLayer} disabled={!selectedIds.size || !moveTargetId}>Move here</button></div>
-      <div className="cutawayControl"><label><input type="checkbox" checked={autoCutaway} onChange={e => setAutoCutaway(e.target.checked)} /> <span>Automatic room cutaway</span></label><small>Fades the two camera-facing groups named as walls. Put anything you want to hide inside its wall group; ceiling detection is disabled.</small></div>
+      <div className="cutawayControl"><label><input type="checkbox" checked={autoCutaway} onChange={e => setAutoCutaway(e.target.checked)} /> <span>Automatic room cutaway</span></label><small>Hides the two camera-facing wall groups together with every nested mesh. Keep all objects that should disappear with a wall inside that wall group.</small></div>
       <div className="layerSearch">
         <Search size={15}/>
         <input aria-label="Search layers" type="search" value={layerSearch} onChange={e => setLayerSearch(e.target.value)} placeholder="Search layers…" />
@@ -1325,14 +1363,14 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     const highlight = new HighlightLayer('shared-selection', scene)
     const sharedEd: Editor = {
       scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [],
-      cutawayMaterials: new Map(), cutawayEnabled: true,
+      cutawayMaterials: new Map(), cutawayEnabled: true, activeCutawaySignature: '',
       cutawayCenter: Vector3.Zero(), cutawaySize: Vector3.One()
     }
     sharedEditorRef.current = sharedEd
     sharedVariantsRef.current = null
     let disposed = false
 
-    const loadVariant = async (url: string, suffix: string) => {
+    const loadVariant = async (url: string) => {
       const result = await SceneLoader.ImportMeshAsync('', '', url, scene, undefined, '.glb')
       const imported: Node[] = [...result.transformNodes, ...result.meshes]
       const importedIds = new Set(imported.map(node => node.uniqueId))
@@ -1343,13 +1381,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         for (const mesh of wall.meshes) {
           if (!mesh.material) continue
           const original = mesh.material
-          const faded = original.clone(`${original.name || 'material'}_${suffix}_cutaway_${mesh.uniqueId}`)
-          if (!faded) continue
-          const baseAlpha = original.alpha
-          faded.alpha = baseAlpha
-          faded.transparencyMode = Material.MATERIAL_ALPHABLEND
-          mesh.material = faded
-          materials.set(mesh.uniqueId, { mesh, original, faded, baseAlpha })
+          materials.set(mesh.uniqueId, { mesh, original, faded: original, baseAlpha: original.alpha })
         }
       }
       const geometry = result.meshes.filter(mesh => mesh.getTotalVertices() > 0)
@@ -1377,6 +1409,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
       sharedEd.cutawayCenter.copyFrom(variant.center)
       sharedEd.cutawaySize.copyFrom(variant.size)
       sharedEd.cutawayEnabled = true
+      sharedEd.activeCutawaySignature = ''
     }
 
     const loadModels = async () => {
@@ -1384,8 +1417,8 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         setPreviewReady(false)
         setPreviewProgress('Loading both shared model versions…')
         const [visible, all] = await Promise.all([
-          loadVariant(info.visibleUrl, 'visible'),
-          loadVariant(info.fullUrl, 'all')
+          loadVariant(info.visibleUrl),
+          loadVariant(info.fullUrl)
         ])
         if (disposed) return
         sharedVariantsRef.current = { visible, all }
@@ -1434,6 +1467,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     sharedEd.cutawayCenter.copyFrom(variant.center)
     sharedEd.cutawaySize.copyFrom(variant.size)
     sharedEd.cutawayEnabled = true
+    sharedEd.activeCutawaySignature = ''
   }, [activeTab, previewReady])
 
   return <div className="sharedPage">

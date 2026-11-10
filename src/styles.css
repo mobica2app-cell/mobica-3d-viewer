@@ -126,3 +126,7 @@
 .movePickerOption small { color: var(--muted, #9aa8b7); font-size: 9px; overflow-wrap: anywhere; }
 .movePickerEmpty { padding: 12px 8px; color: var(--muted, #9aa8b7); font-size: 11px; }
 .layerMoveControls > .btn { white-space: nowrap; min-height: 34px; }
+/* Focus/highlight from the layer name or 3D viewport is separate from the
+   checkbox selection used by bulk actions. */
+.layer.focused{background:#17334b;color:#e2f2ff;box-shadow:inset 2px 0 0 #39a9f5}
+.layer.active.focused{background:#12463f;box-shadow:inset 2px 0 0 #39d6c4}
