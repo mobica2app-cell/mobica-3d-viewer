@@ -151,3 +151,57 @@
 .previewChoiceCard strong{margin-top:14px;font-size:17px}
 .previewChoiceCard small{margin-top:4px;margin-bottom:16px;color:#718096;font-size:12px}
 @media(max-width:600px){.previewChoiceOverlay{padding:18px;gap:18px}.previewChoiceHeading h1{font-size:22px}.previewChoiceGrid{grid-template-columns:1fr;max-width:360px;gap:12px}.previewChoiceImage{height:135px}}
+
+/* Keep the shared-preview app bar above the Babylon canvas on every viewport. */
+.sharedPage{
+  height:100vh;
+  height:100dvh;
+  min-height:0;
+  overflow:hidden;
+}
+.sharedHeader{
+  position:relative;
+  z-index:1000;
+  isolation:isolate;
+  flex:0 0 auto;
+  min-height:68px;
+  width:100%;
+  visibility:visible;
+  opacity:1;
+  transform:none;
+}
+.sharedViewport{
+  position:relative;
+  z-index:0;
+  flex:1 1 auto;
+  min-height:0;
+  isolation:isolate;
+}
+.sharedViewport canvas{
+  position:absolute;
+  inset:0;
+  z-index:0;
+}
+.sharedViewport .previewChoiceOverlay,
+.sharedViewport .sharedMessage,
+.sharedViewport .sharedFileName,
+.sharedViewport .sharedHint{
+  z-index:5;
+}
+@media(max-width:600px){
+  .sharedHeader{
+    min-height:64px;
+    height:auto;
+    padding: max(9px, env(safe-area-inset-top)) 12px 9px;
+    flex-wrap:wrap;
+    row-gap:8px;
+  }
+  .sharedHeader > .brand{order:1;flex:0 0 auto;min-width:0}
+  .sharedHeader > .sharedMeta{order:2;margin-left:auto;min-width:0;gap:7px;white-space:nowrap}
+  .sharedHeader > .sharedTabs{order:3;flex:1 0 100%;justify-content:center}
+  .sharedHeader .brand strong{font-size:14px}
+  .sharedHeader .brand small{display:block;font-size:8px;letter-spacing:1.3px}
+  .sharedHeader .readOnlyTag{padding:5px 6px;font-size:8px}
+  .sharedHeader .sharedMeta span{gap:4px}
+  .sharedHeader .sharedTabs button{padding:7px 16px}
+}
