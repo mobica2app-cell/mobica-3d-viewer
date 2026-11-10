@@ -149,22 +149,25 @@ function collectCutawayWalls(nodes: Node[]): CutawayWall[] {
 
 function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, _modelSize: Vector3) {
   // Wall membership and mesh references are collected once when the GLB loads.
-  // During camera movement we only compare the four wall groups; meshes are
-  // touched only when the set of hidden walls actually changes.
+  // During camera movement we compare wall directions; meshes are touched only
+  // when the single 5-degree-facing wall changes.
   const cameraPosition = ed.camera.position
   const cameraDirection = new Vector3(cameraPosition.x - modelCenter.x, 0, cameraPosition.z - modelCenter.z)
   if (cameraDirection.lengthSquared() > 1e-6) cameraDirection.normalize()
-  const selectedSides = ed.cutawayWalls
+  // Hide at most one wall: the wall whose outward direction points most
+  // directly toward the camera. The 5-degree cone prevents adjacent walls
+  // from disappearing while the user is looking between them.
+  const toleranceCos = Math.cos(5 * Math.PI / 180)
+  const facingWall = ed.cutawayWalls
     .map(wall => {
       const offset = new Vector3(wall.center.x - modelCenter.x, 0, wall.center.z - modelCenter.z)
       const score = offset.lengthSquared() > 1e-6 ? Vector3.Dot(offset.normalize(), cameraDirection) : -1
       return { wall, score }
     })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 2)
-    .map(item => item.wall)
-  const hidden = new Set(selectedSides)
-  const signature = selectedSides.map(wall => String(wall.root.uniqueId)).sort().join('|')
+    .sort((a, b) => b.score - a.score)[0]
+  const selectedWalls = facingWall && facingWall.score >= toleranceCos ? [facingWall.wall] : []
+  const hidden = new Set(selectedWalls)
+  const signature = selectedWalls.map(wall => String(wall.root.uniqueId)).join('|')
   if (signature === ed.activeCutawaySignature) return
   ed.activeCutawaySignature = signature
 
@@ -1258,7 +1261,7 @@ function EditorApp() {
         while (parentId != null) { const parentItem = items.find(candidate => candidate.id === parentId); if (parentItem) path.unshift(parentItem.name); parentId = parentItem?.parentId ?? null }
         return <button type="button" className={`movePickerOption ${moveTargetId === String(item.id) ? 'chosen' : ''}`} key={item.id} onClick={() => { setMoveTargetId(String(item.id)); setMoveLayerQuery(path.join(' / ')); setMovePickerOpen(false) }}><strong>{item.name}</strong><small>{path.join(' / ')}</small></button>
       })}{items.filter(item => !selectedIds.has(item.id)).length === 0 && <div className="movePickerEmpty">No valid destination layers</div>}</div>}</div><button className="btn" onClick={moveSelectedToLayer} disabled={!selectedIds.size || !moveTargetId}>Move here</button></div>
-      <div className="cutawayControl"><label><input type="checkbox" checked={autoCutaway} onChange={e => setAutoCutaway(e.target.checked)} /> <span>Automatic room cutaway</span></label><small>Hides the two camera-facing wall groups together with every nested mesh. Keep all objects that should disappear with a wall inside that wall group.</small></div>
+      <div className="cutawayControl"><label><input type="checkbox" checked={autoCutaway} onChange={e => setAutoCutaway(e.target.checked)} /> <span>Automatic room cutaway</span></label><small>Hides only the wall directly facing the camera within a 5° range, together with every nested mesh. Other walls stay visible.</small></div>
       <div className="layerSearch">
         <Search size={15}/>
         <input aria-label="Search layers" type="search" value={layerSearch} onChange={e => setLayerSearch(e.target.value)} placeholder="Search layers…" />
