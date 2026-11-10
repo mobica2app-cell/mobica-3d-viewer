@@ -499,39 +499,12 @@ function EditorApp() {
     selectedIdsRef.current = next
     setSelectedIds(next)
   }
-  const expandSelectionOneLevel = () => {
-    const ed = editorRef.current
-    if (!ed || selected == null) return
-    const currentNode = ed.nodes.get(selected)
-    const parent = currentNode?.parent
-    if (!parent || !ed.nodes.has(parent.uniqueId)) return
-    const ids = descendants(parent).filter(node => ed.nodes.has(node.uniqueId)).map(node => node.uniqueId)
-    if (!ids.length) return
-    // Shift expands the current selection upward without discarding anything
-    // already checked, and includes the newly expanded group's descendants.
-    const next = new Set(selectedIdsRef.current)
-    ids.forEach(id => next.add(id))
-    next.add(parent.uniqueId)
-    selectedIdsRef.current = next
-    setSelectedIds(next)
-    setSelected(parent.uniqueId)
-    ed.highlight.removeAllMeshes()
-    for (const id of next) {
-      const node = ed.nodes.get(id)
-      if (node) for (const mesh of findMeshes(node)) if (mesh instanceof Mesh && mesh.isEnabled()) ed.highlight.addMesh(mesh, new Color3(0.1, 0.75, 0.95))
-    }
-    setStatus(`Added ${ids.length + 1} layers from ${parent.name || 'Unnamed group'} · ${next.size} selected total`)
+  const clearManualSelection = () => {
+    selectedIdsRef.current = new Set()
+    setSelectedIds(new Set())
+    setSelected(null)
+    editorRef.current?.highlight.removeAllMeshes()
   }
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Shift' || event.repeat) return
-      const target = event.target as HTMLElement | null
-      if (target && (target.isContentEditable || /INPUT|TEXTAREA|SELECT/.test(target.tagName))) return
-      expandSelectionOneLevel()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [selected, items])
 
   useEffect(() => {
     if (!canvasRef.current) return
@@ -1230,7 +1203,7 @@ function EditorApp() {
   return <div className="app">
     <header className="topbar"><div className="brand"><div><strong>MOBICA</strong><small>3D MATERIAL STUDIO</small></div></div>
       <div className="toolbar"><button className="btn historyBtn" onClick={undo} disabled={!undoCount || busy} title="Undo (last 10 hide/delete actions)"><Undo2 size={15}/> Undo</button><button className="btn historyBtn" onClick={redo} disabled={!redoCount || busy} title="Redo"><Redo2 size={15}/> Redo</button><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><div className="exportDropdown"><div className="exportMainActions"><button className="btn primary" onClick={() => void exportModel('glb')} disabled={!filename || busy}><Download size={16}/> Download GLB</button><button className="btn exportChevron" aria-label="Show all export formats and sizes" title="Calculate all export sizes" onClick={() => { if (exportDropdownOpen) setExportDropdownOpen(false); else if (exportSizes) setExportDropdownOpen(true); else void prepareExportSizes() }} disabled={!filename || busy}><ChevronDown size={16}/></button></div>{exportDropdownOpen && <div className="exportDropdownMenu"><div className="exportDropdownTitle">Export formats <small>Compressed file sizes</small></div>{(['glb','gltf','obj','stl'] as const).map(format => <div className="exportDropdownRow" key={format}><div className="exportFormatInfo"><strong>{format.toUpperCase()}{format === 'glb' ? ' · Main' : ''}</strong><span>{exportSizes ? `${(exportSizes[format] / 1024 / 1024).toFixed(2)} MB` : 'Calculating…'}</span></div><button className="btn exportRowDownload" onClick={() => { setExportDropdownOpen(false); void exportModel(format) }} disabled={!exportSizes || busy}><Download size={14}/> Download</button></div>)}</div>}</div><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
-    <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size}><EyeOff size={14}/> Hide selected</button></div><div className="layerMoveControls"><div className="movePicker"><input aria-label="Find destination layer" value={moveLayerQuery} onFocus={() => setMovePickerOpen(true)} onChange={e => { setMoveLayerQuery(e.target.value); setMovePickerOpen(true); setMoveTargetId('') }} placeholder={selectedIds.size ? `Find destination for ${selectedIds.size} selected…` : 'Select layers first'} disabled={!selectedIds.size}/>{moveTargetId && <button className="moveTargetClear" title="Clear destination" onClick={() => { setMoveTargetId(''); setMoveLayerQuery('') }}>×</button>}{movePickerOpen && selectedIds.size > 0 && <div className="movePickerResults">{items.filter(item => {
+    <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size}><EyeOff size={14}/> Hide selected</button><button className="btn" onClick={clearManualSelection} disabled={!selectedIds.size}><X size={14}/> Unselect all</button></div><div className="layerMoveControls"><div className="movePicker"><input aria-label="Find destination layer" value={moveLayerQuery} onFocus={() => setMovePickerOpen(true)} onChange={e => { setMoveLayerQuery(e.target.value); setMovePickerOpen(true); setMoveTargetId('') }} placeholder={selectedIds.size ? `Find destination for ${selectedIds.size} selected…` : 'Select layers first'} disabled={!selectedIds.size}/>{moveTargetId && <button className="moveTargetClear" title="Clear destination" onClick={() => { setMoveTargetId(''); setMoveLayerQuery('') }}>×</button>}{movePickerOpen && selectedIds.size > 0 && <div className="movePickerResults">{items.filter(item => {
         if (selectedIds.has(item.id)) return false
         const node = editorRef.current?.nodes.get(item.id)
         if (!(node instanceof TransformNode)) return false
