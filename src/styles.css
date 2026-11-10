@@ -108,3 +108,7 @@
 .exportFormatInfo span{font-size:11px;font-variant-numeric:tabular-nums;color:#70e0ce}
 .exportRowDownload{padding:7px 9px;font-size:10px}
 @media(max-width:900px){.toolbar{gap:5px}.exportDropdownMenu{right:0}}
+
+.layerSelectCheckbox { flex: 0 0 auto; width: 15px; height: 15px; margin: 0 5px 0 2px; accent-color: #10b981; cursor: pointer; }
+.layerMoveControls { display:flex; gap:6px; padding: 7px 10px; }
+.layerMoveControls select { min-width:0; flex:1; height:32px; border:1px solid var(--border, #333); border-radius:7px; background:var(--panel, #222); color:inherit; padding:0 7px; font-size:12px; }
