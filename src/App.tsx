@@ -183,6 +183,8 @@ function EditorApp() {
   const [renamingId, setRenamingId] = useState<number | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [moveTargetId, setMoveTargetId] = useState('')
+  const [moveLayerQuery, setMoveLayerQuery] = useState('')
+  const [movePickerOpen, setMovePickerOpen] = useState(false)
   const selectedIdsRef = useRef<Set<number>>(new Set())
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [layerSearch, setLayerSearch] = useState('')
@@ -505,8 +507,20 @@ function EditorApp() {
     if (!parent || !ed.nodes.has(parent.uniqueId)) return
     const ids = descendants(parent).filter(node => ed.nodes.has(node.uniqueId)).map(node => node.uniqueId)
     if (!ids.length) return
-    select(parent.uniqueId)
-    setStatus(`Selected parent collection: ${parent.name || 'Unnamed group'} (${ids.length} layers)`)
+    // Shift expands the current selection upward without discarding anything
+    // already checked, and includes the newly expanded group's descendants.
+    const next = new Set(selectedIdsRef.current)
+    ids.forEach(id => next.add(id))
+    next.add(parent.uniqueId)
+    selectedIdsRef.current = next
+    setSelectedIds(next)
+    setSelected(parent.uniqueId)
+    ed.highlight.removeAllMeshes()
+    for (const id of next) {
+      const node = ed.nodes.get(id)
+      if (node) for (const mesh of findMeshes(node)) if (mesh instanceof Mesh && mesh.isEnabled()) ed.highlight.addMesh(mesh, new Color3(0.1, 0.75, 0.95))
+    }
+    setStatus(`Added ${ids.length + 1} layers from ${parent.name || 'Unnamed group'} · ${next.size} selected total`)
   }
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -686,26 +700,35 @@ function EditorApp() {
   const moveSelectedToLayer = () => {
     const ed = editorRef.current
     const targetId = Number(moveTargetId)
-    if (!ed || !selectedIds.size || !moveTargetId) return
+    if (!ed || !selectedIdsRef.current.size || !moveTargetId) return
     const target = ed.nodes.get(targetId)
-    if (!target) return
-    const moving = [...selectedIds].map(id => ed.nodes.get(id)).filter((node): node is Node => !!node)
+    if (!(target instanceof TransformNode)) return
+
+    const selectedNodes = [...selectedIdsRef.current]
+      .map(id => ed.nodes.get(id))
+      .filter((node): node is TransformNode => node instanceof TransformNode)
+    // If both a parent and its child are selected, move only the parent.
+    // This avoids moving the child twice and preserves the selected subtree.
+    const moving = selectedNodes.filter(node => {
+      let parent = node.parent
+      while (parent) {
+        if (selectedIdsRef.current.has(parent.uniqueId)) return false
+        parent = parent.parent
+      }
+      return true
+    })
+    if (!moving.length) {
+      setStatus('Select at least one movable layer (group or mesh) first.')
+      return
+    }
     if (moving.some(node => node === target || descendants(node).includes(target))) {
-      setStatus('A layer cannot be moved inside itself or one of its descendants.')
+      setStatus('Choose a destination outside the selected layer hierarchy.')
       return
     }
-    if (!(target instanceof TransformNode) || moving.some(node => !(node instanceof TransformNode))) {
-      setStatus('These layers cannot be re-parented because they are not transform nodes.')
-      return
-    }
+
     moving.forEach(node => {
-      // The validation above guarantees this is a TransformNode. Keep the
-      // narrowed type explicit because TypeScript does not narrow array items
-      // from Array.some().
-      const transformNode = node as TransformNode
-      // Preserve the object's world transform while changing its hierarchy parent.
-      transformNode.computeWorldMatrix(true)
-      const world = transformNode.getWorldMatrix().clone()
+      node.computeWorldMatrix(true)
+      const world = node.getWorldMatrix().clone()
       target.computeWorldMatrix(true)
       const parentInverse = target.getWorldMatrix().clone().invert()
       const local = world.multiply(parentInverse)
@@ -713,15 +736,17 @@ function EditorApp() {
       const rotation = new Quaternion()
       const position = Vector3.Zero()
       local.decompose(scaling, rotation, position)
-      transformNode.parent = target
-      transformNode.scaling.copyFrom(scaling)
-      transformNode.rotationQuaternion = rotation
-      transformNode.position.copyFrom(position)
+      node.parent = target
+      node.scaling.copyFrom(scaling)
+      node.rotationQuaternion = rotation
+      node.position.copyFrom(position)
     })
     setMoveTargetId('')
+    setMoveLayerQuery('')
+    setMovePickerOpen(false)
     refresh()
     invalidateExportSizes()
-    setStatus(`Moved ${moving.length} selected layer${moving.length === 1 ? '' : 's'} into ${target.name || 'the target layer'}`)
+    setStatus(`Moved ${moving.length} layer${moving.length === 1 ? '' : 's'} into ${target.name || 'the target layer'}`)
   }
 
   const splitFromDrawnLine = (source: Mesh, worldStart: Vector3, worldEnd: Vector3) => {
@@ -1205,7 +1230,21 @@ function EditorApp() {
   return <div className="app">
     <header className="topbar"><div className="brand"><div><strong>MOBICA</strong><small>3D MATERIAL STUDIO</small></div></div>
       <div className="toolbar"><button className="btn historyBtn" onClick={undo} disabled={!undoCount || busy} title="Undo (last 10 hide/delete actions)"><Undo2 size={15}/> Undo</button><button className="btn historyBtn" onClick={redo} disabled={!redoCount || busy} title="Redo"><Redo2 size={15}/> Redo</button><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><div className="exportDropdown"><div className="exportMainActions"><button className="btn primary" onClick={() => void exportModel('glb')} disabled={!filename || busy}><Download size={16}/> Download GLB</button><button className="btn exportChevron" aria-label="Show all export formats and sizes" title="Calculate all export sizes" onClick={() => { if (exportDropdownOpen) setExportDropdownOpen(false); else if (exportSizes) setExportDropdownOpen(true); else void prepareExportSizes() }} disabled={!filename || busy}><ChevronDown size={16}/></button></div>{exportDropdownOpen && <div className="exportDropdownMenu"><div className="exportDropdownTitle">Export formats <small>Compressed file sizes</small></div>{(['glb','gltf','obj','stl'] as const).map(format => <div className="exportDropdownRow" key={format}><div className="exportFormatInfo"><strong>{format.toUpperCase()}{format === 'glb' ? ' · Main' : ''}</strong><span>{exportSizes ? `${(exportSizes[format] / 1024 / 1024).toFixed(2)} MB` : 'Calculating…'}</span></div><button className="btn exportRowDownload" onClick={() => { setExportDropdownOpen(false); void exportModel(format) }} disabled={!exportSizes || busy}><Download size={14}/> Download</button></div>)}</div>}</div><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
-    <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size}><EyeOff size={14}/> Hide selected</button></div><div className="layerMoveControls"><select aria-label="Move selected layers to" value={moveTargetId} onChange={e => setMoveTargetId(e.target.value)} disabled={!selectedIds.size}><option value="">Move selected to layer…</option>{items.filter(item => !selectedIds.has(item.id)).map(item => <option key={item.id} value={item.id}>{'　'.repeat(item.depth)}{item.name}</option>)}</select><button className="btn" onClick={moveSelectedToLayer} disabled={!selectedIds.size || !moveTargetId}>Move</button></div>
+    <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size}><EyeOff size={14}/> Hide selected</button></div><div className="layerMoveControls"><div className="movePicker"><input aria-label="Find destination layer" value={moveLayerQuery} onFocus={() => setMovePickerOpen(true)} onChange={e => { setMoveLayerQuery(e.target.value); setMovePickerOpen(true); setMoveTargetId('') }} placeholder={selectedIds.size ? `Find destination for ${selectedIds.size} selected…` : 'Select layers first'} disabled={!selectedIds.size}/>{moveTargetId && <button className="moveTargetClear" title="Clear destination" onClick={() => { setMoveTargetId(''); setMoveLayerQuery('') }}>×</button>}{movePickerOpen && selectedIds.size > 0 && <div className="movePickerResults">{items.filter(item => {
+        if (selectedIds.has(item.id)) return false
+        const node = editorRef.current?.nodes.get(item.id)
+        if (!(node instanceof TransformNode)) return false
+        const selectedNodes = [...selectedIds].map(id => editorRef.current?.nodes.get(id)).filter((n): n is Node => !!n)
+        if (selectedNodes.some(selectedNode => selectedNode === node || descendants(selectedNode).includes(node))) return false
+        const path: string[] = [item.name]; let parentId = item.parentId
+        while (parentId != null) { const parentItem = items.find(candidate => candidate.id === parentId); if (parentItem) path.unshift(parentItem.name); parentId = parentItem?.parentId ?? null }
+        const label = path.join(' / ')
+        return !moveLayerQuery.trim() || normalizeLayerText(label).includes(normalizeLayerText(moveLayerQuery))
+      }).slice(0, 80).map(item => {
+        const path: string[] = [item.name]; let parentId = item.parentId
+        while (parentId != null) { const parentItem = items.find(candidate => candidate.id === parentId); if (parentItem) path.unshift(parentItem.name); parentId = parentItem?.parentId ?? null }
+        return <button type="button" className={`movePickerOption ${moveTargetId === String(item.id) ? 'chosen' : ''}`} key={item.id} onClick={() => { setMoveTargetId(String(item.id)); setMoveLayerQuery(path.join(' / ')); setMovePickerOpen(false) }}><strong>{item.name}</strong><small>{path.join(' / ')}</small></button>
+      })}{items.filter(item => !selectedIds.has(item.id)).length === 0 && <div className="movePickerEmpty">No valid destination layers</div>}</div>}</div><button className="btn" onClick={moveSelectedToLayer} disabled={!selectedIds.size || !moveTargetId}>Move here</button></div>
       <div className="cutawayControl"><label><input type="checkbox" checked={autoCutaway} onChange={e => setAutoCutaway(e.target.checked)} /> <span>Automatic room cutaway</span></label><small>Fades the two camera-facing groups named as walls. Put anything you want to hide inside its wall group; ceiling detection is disabled.</small></div>
       <div className="layerSearch">
         <Search size={15}/>

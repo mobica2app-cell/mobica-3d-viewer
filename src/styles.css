@@ -112,3 +112,17 @@
 .layerSelectCheckbox { flex: 0 0 auto; width: 15px; height: 15px; margin: 0 5px 0 2px; accent-color: #10b981; cursor: pointer; }
 .layerMoveControls { display:flex; gap:6px; padding: 7px 10px; }
 .layerMoveControls select { min-width:0; flex:1; height:32px; border:1px solid var(--border, #333); border-radius:7px; background:var(--panel, #222); color:inherit; padding:0 7px; font-size:12px; }
+
+/* Searchable destination picker for moving selected scene layers */
+.layerMoveControls { align-items: flex-start; }
+.movePicker { position: relative; min-width: 0; flex: 1; }
+.movePicker > input { box-sizing: border-box; width: 100%; height: 34px; padding: 0 28px 0 9px; border: 1px solid var(--border, #3b4654); border-radius: 7px; background: var(--panel, #222); color: inherit; font-size: 11px; }
+.movePicker > input:disabled { opacity: .55; cursor: not-allowed; }
+.moveTargetClear { position: absolute; right: 6px; top: 7px; border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 17px; line-height: 18px; }
+.movePickerResults { position: absolute; z-index: 40; top: calc(100% + 5px); left: 0; right: 0; max-height: 260px; overflow: auto; padding: 4px; border: 1px solid var(--border, #3b4654); border-radius: 8px; background: var(--panel, #202a35); box-shadow: 0 12px 28px #0009; }
+.movePickerOption { display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 7px 8px; border: 0; border-radius: 5px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.movePickerOption:hover, .movePickerOption.chosen { background: #2563eb2b; }
+.movePickerOption strong { font-size: 11px; font-weight: 650; }
+.movePickerOption small { color: var(--muted, #9aa8b7); font-size: 9px; overflow-wrap: anywhere; }
+.movePickerEmpty { padding: 12px 8px; color: var(--muted, #9aa8b7); font-size: 11px; }
+.layerMoveControls > .btn { white-space: nowrap; min-height: 34px; }
