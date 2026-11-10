@@ -92,3 +92,19 @@
 .exportSizeRow{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:#0e1721;border:1px solid #39485a;border-radius:9px;color:#dce7f1;font-size:13px}
 .exportSizeRow span{font-variant-numeric:tabular-nums;color:#70e0ce;font-weight:700}
 .exportSizeDialog{width:min(520px,100%)}
+
+/* Compact export dropdown: GLB is the primary one-click download. */
+.exportDropdown{position:relative;display:flex;align-items:center}
+.exportMainActions{display:flex;gap:0}
+.exportMainActions>.btn:first-child{border-top-right-radius:0;border-bottom-right-radius:0}
+.exportChevron{border-top-left-radius:0;border-bottom-left-radius:0;padding-left:10px;padding-right:10px}
+.exportDropdownMenu{position:absolute;z-index:30;top:calc(100% + 9px);right:0;width:310px;padding:10px;background:#18222e;border:1px solid #405064;border-radius:12px;box-shadow:0 16px 40px #0009}
+.exportDropdownTitle{font-size:12px;font-weight:800;color:#eaf3fa;padding:5px 7px 10px;border-bottom:1px solid #344354}
+.exportDropdownTitle small{display:block;margin-top:4px;font-size:10px;font-weight:400;color:#91a0b0}
+.exportDropdownRow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 5px;border-bottom:1px solid #2b3948}
+.exportDropdownRow:last-child{border-bottom:0}
+.exportFormatInfo{display:flex;flex-direction:column;gap:4px;min-width:0}
+.exportFormatInfo strong{font-size:11px;color:#eaf3fa}
+.exportFormatInfo span{font-size:11px;font-variant-numeric:tabular-nums;color:#70e0ce}
+.exportRowDownload{padding:7px 9px;font-size:10px}
+@media(max-width:900px){.toolbar{gap:5px}.exportDropdownMenu{right:0}}
