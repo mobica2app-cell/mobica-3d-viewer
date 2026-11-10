@@ -699,9 +699,13 @@ function EditorApp() {
       return
     }
     moving.forEach(node => {
+      // The validation above guarantees this is a TransformNode. Keep the
+      // narrowed type explicit because TypeScript does not narrow array items
+      // from Array.some().
+      const transformNode = node as TransformNode
       // Preserve the object's world transform while changing its hierarchy parent.
-      node.computeWorldMatrix(true)
-      const world = node.getWorldMatrix().clone()
+      transformNode.computeWorldMatrix(true)
+      const world = transformNode.getWorldMatrix().clone()
       target.computeWorldMatrix(true)
       const parentInverse = target.getWorldMatrix().clone().invert()
       const local = world.multiply(parentInverse)
@@ -709,10 +713,10 @@ function EditorApp() {
       const rotation = new Quaternion()
       const position = Vector3.Zero()
       local.decompose(scaling, rotation, position)
-      node.parent = target
-      node.scaling.copyFrom(scaling)
-      node.rotationQuaternion = rotation
-      node.position.copyFrom(position)
+      transformNode.parent = target
+      transformNode.scaling.copyFrom(scaling)
+      transformNode.rotationQuaternion = rotation
+      transformNode.position.copyFrom(position)
     })
     setMoveTargetId('')
     refresh()
