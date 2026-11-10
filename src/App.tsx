@@ -702,7 +702,7 @@ function EditorApp() {
   const toggleSelectedVisibility = (visible: boolean) => {
     const ed = editorRef.current
     if (!ed) return
-    const ids = selectedIds.size ? [...selectedIds] : selected == null ? [] : [selected]
+    const ids = selectedIdsRef.current.size ? [...selectedIdsRef.current] : highlightedIdsRef.current.size > 1 ? [...highlightedIdsRef.current] : selected == null ? [] : [selected]
     if (!ids.length) return
     pushHistory()
     ids.forEach(id => visible ? modelRef.current?.hiddenIds.delete(id) : modelRef.current?.hiddenIds.add(id))
@@ -758,6 +758,8 @@ function EditorApp() {
     setMoveTargetId('')
     setMoveLayerQuery('')
     setMovePickerOpen(false)
+    selectedIdsRef.current = new Set()
+    setSelectedIds(new Set())
     refresh()
     invalidateExportSizes()
     setStatus(`Moved ${moving.length} layer${moving.length === 1 ? '' : 's'} into ${target.name || 'the target layer'}`)
@@ -1241,7 +1243,7 @@ function EditorApp() {
   return <div className="app">
     <header className="topbar"><div className="brand"><div><strong>MOBICA</strong><small>3D MATERIAL STUDIO</small></div></div>
       <div className="toolbar"><button className="btn historyBtn" onClick={undo} disabled={!undoCount || busy} title="Undo (last 10 hide/delete actions)"><Undo2 size={15}/> Undo</button><button className="btn historyBtn" onClick={redo} disabled={!redoCount || busy} title="Redo"><Redo2 size={15}/> Redo</button><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><div className="exportDropdown"><div className="exportMainActions"><button className="btn primary" onClick={() => void exportModel('glb')} disabled={!filename || busy}><Download size={16}/> Download GLB</button><button className="btn exportChevron" aria-label="Show all export formats and sizes" title="Calculate all export sizes" onClick={() => { if (exportDropdownOpen) setExportDropdownOpen(false); else if (exportSizes) setExportDropdownOpen(true); else void prepareExportSizes() }} disabled={!filename || busy}><ChevronDown size={16}/></button></div>{exportDropdownOpen && <div className="exportDropdownMenu"><div className="exportDropdownTitle">Export formats <small>Compressed file sizes</small></div>{(['glb','gltf','obj','stl'] as const).map(format => <div className="exportDropdownRow" key={format}><div className="exportFormatInfo"><strong>{format.toUpperCase()}{format === 'glb' ? ' · Main' : ''}</strong><span>{exportSizes ? `${(exportSizes[format] / 1024 / 1024).toFixed(2)} MB` : 'Calculating…'}</span></div><button className="btn exportRowDownload" onClick={() => { setExportDropdownOpen(false); void exportModel(format) }} disabled={!exportSizes || busy}><Download size={14}/> Download</button></div>)}</div>}</div><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
-    <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size}><EyeOff size={14}/> Hide selected</button></div><div className="layerMoveControls"><div className="movePicker"><input aria-label="Find destination layer" value={moveLayerQuery} onFocus={() => setMovePickerOpen(true)} onChange={e => { setMoveLayerQuery(e.target.value); setMovePickerOpen(true); setMoveTargetId('') }} placeholder={selectedIds.size ? `Find destination for ${selectedIds.size} selected…` : 'Select layers first'} disabled={!selectedIds.size}/>{moveTargetId && <button className="moveTargetClear" title="Clear destination" onClick={() => { setMoveTargetId(''); setMoveLayerQuery('') }}>×</button>}{movePickerOpen && selectedIds.size > 0 && <div className="movePickerResults">{items.filter(item => {
+    <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size && highlightedIds.size < 2 && selected == null}><EyeOff size={14}/> Hide selected</button><button className="btn" onClick={() => { selectedIdsRef.current = new Set(); setSelectedIds(new Set()) }} disabled={!selectedIds.size}><X size={14}/> Unselect all</button></div><div className="layerMoveControls"><div className="movePicker"><input aria-label="Find destination layer" value={moveLayerQuery} onFocus={() => setMovePickerOpen(true)} onChange={e => { setMoveLayerQuery(e.target.value); setMovePickerOpen(true); setMoveTargetId('') }} placeholder={selectedIds.size ? `Find destination for ${selectedIds.size} selected…` : 'Select layers first'} disabled={!selectedIds.size}/>{moveTargetId && <button className="moveTargetClear" title="Clear destination" onClick={() => { setMoveTargetId(''); setMoveLayerQuery('') }}>×</button>}{movePickerOpen && selectedIds.size > 0 && <div className="movePickerResults">{items.filter(item => {
         if (selectedIds.has(item.id)) return false
         const node = editorRef.current?.nodes.get(item.id)
         if (!(node instanceof TransformNode)) return false
@@ -1290,6 +1292,8 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const [error, setError] = useState('')
   const [remaining, setRemaining] = useState('')
   const [activeTab, setActiveTab] = useState<'visible' | 'all'>('visible')
+  const [viewerEntered, setViewerEntered] = useState(false)
+  const [previewThumbs, setPreviewThumbs] = useState<{ opened: string; closed: string } | null>(null)
   const [previewReady, setPreviewReady] = useState(false)
   const [previewProgress, setPreviewProgress] = useState('Preparing model preview…')
   const cameraRef = useRef<ArcRotateCamera | null>(null)
@@ -1302,6 +1306,8 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     if (!supabaseUrl || !supabaseKey) { setError('This viewer is not configured.'); return }
     let cancelled = false
     setPreviewReady(false)
+    setViewerEntered(false)
+    setPreviewThumbs(null)
     setError('')
     setPreviewProgress('Checking share links…')
     const fetchShare = async (shareId: string) => {
@@ -1426,6 +1432,14 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         camera.radius = Math.max(visible.size.length() * 0.75, 0.5)
         camera.maxZ = Math.max(camera.radius * 100, 100)
         camera.wheelPrecision = Math.max(10, camera.radius * 8)
+        // Capture image previews for both shared variants.
+        activateVariant(visible)
+        scene.render()
+        const openedThumb = canvas.toDataURL('image/jpeg', 0.82)
+        activateVariant(all)
+        scene.render()
+        const closedThumb = canvas.toDataURL('image/jpeg', 0.82)
+        setPreviewThumbs({ opened: openedThumb, closed: closedThumb })
         activateVariant(activeTab === 'all' ? all : visible)
         const activeWalls = visible.walls
         setPreviewProgress(activeWalls.length ? 'Studio cutaway ready' : 'Model loaded · no wall groups detected for automatic cutaway.')
@@ -1473,17 +1487,30 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   return <div className="sharedPage">
     <header className="sharedHeader">
       <div className="brand"><div><strong>MOBICA</strong><small>3D MODEL PREVIEW</small></div></div>
-      <div className="sharedTabs">
-        <button className={activeTab === 'visible' ? 'active' : ''} onClick={() => setActiveTab('visible')} disabled={!previewReady}>Hidden layers off</button>
-        <button className={activeTab === 'all' ? 'active' : ''} onClick={() => setActiveTab('all')} disabled={!previewReady}>Hidden layers on</button>
-      </div>
+      {viewerEntered && <div className="sharedTabs">
+        <button className={activeTab === 'visible' ? 'active' : ''} onClick={() => setActiveTab('visible')} disabled={!previewReady}>Opened</button>
+        <button className={activeTab === 'all' ? 'active' : ''} onClick={() => setActiveTab('all')} disabled={!previewReady}>Closed</button>
+      </div>}
       <div className="sharedMeta"><span><Clock size={14}/> {remaining || 'Checking expiry…'}</span><span className="readOnlyTag">READ ONLY</span></div>
     </header>
     <main className={`sharedViewport ${!previewReady ? 'previewLoading' : ''}`}>
       <canvas ref={canvasRef}/>
+      {previewReady && !viewerEntered && !error && previewThumbs && <div className="previewChoiceOverlay">
+        <div className="previewChoiceHeading"><h1>Choose model view</h1><p>Opened has no manually hidden layers. Closed includes all layers.</p></div>
+        <div className="previewChoiceGrid">
+          <button className="previewChoiceCard" onClick={() => { setActiveTab('visible'); setViewerEntered(true) }}>
+            <div className="previewChoiceImage"><img src={previewThumbs.opened} alt="Opened model preview"/><span className="previewChoiceTag">OPENED</span></div>
+            <strong>Opened</strong><small>Without hidden layers</small>
+          </button>
+          <button className="previewChoiceCard" onClick={() => { setActiveTab('all'); setViewerEntered(true) }}>
+            <div className="previewChoiceImage"><img src={previewThumbs.closed} alt="Closed model preview"/><span className="previewChoiceTag">CLOSED</span></div>
+            <strong>Closed</strong><small>Includes hidden layers</small>
+          </button>
+        </div>
+      </div>}
       {!previewReady && !error && <div className="sharedMessage previewLoadingMessage"><div className="previewSpinner"/><h2>Preparing your 3D model</h2><p>{previewProgress}</p><small>Please wait while the shared model loads.</small></div>}
       {error && <div className="sharedMessage errorMessage"><h2>Link unavailable</h2><p>{error}</p></div>}
-      {previewReady && !error && <><div className="sharedFileName">{info?.filename}</div><div className="sharedHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</div></>}
+      {previewReady && viewerEntered && !error && <><div className="sharedFileName">{info?.filename}</div><div className="sharedHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</div></>}
     </main>
   </div>
 }

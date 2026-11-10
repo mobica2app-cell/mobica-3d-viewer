@@ -130,3 +130,24 @@
    checkbox selection used by bulk actions. */
 .layer.focused{background:#17334b;color:#e2f2ff;box-shadow:inset 2px 0 0 #39a9f5}
 .layer.active.focused{background:#12463f;box-shadow:inset 2px 0 0 #39d6c4}
+
+/* Manual layer selection controls */
+.layerBulk{display:flex;flex-wrap:wrap;gap:6px}
+.layerBulk .btn{flex:1;justify-content:center;min-width:0}
+.layerBulk .btn:disabled{opacity:.4;cursor:not-allowed}
+
+/* Shared preview choice cards */
+.previewChoiceOverlay{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px;padding:28px;background:rgba(245,248,250,.94);backdrop-filter:blur(8px);color:#243447}
+.previewChoiceHeading{text-align:center;max-width:560px}
+.previewChoiceHeading h1{margin:0 0 8px;font-size:27px;letter-spacing:-.5px}
+.previewChoiceHeading p{margin:0;color:#687789;font-size:13px;line-height:1.6}
+.previewChoiceGrid{display:grid;grid-template-columns:repeat(2,minmax(220px,340px));gap:20px;width:min(720px,100%)}
+.previewChoiceCard{overflow:hidden;text-align:left;padding:0;border:1px solid #d7e0e8;border-radius:15px;background:#fff;color:#243447;box-shadow:0 12px 35px #1c2d3e14;cursor:pointer;transition:transform .18s,border-color .18s,box-shadow .18s}
+.previewChoiceCard:hover{transform:translateY(-4px);border-color:#0f9b8e;box-shadow:0 16px 40px #1c2d3e20}
+.previewChoiceImage{height:190px;position:relative;background:linear-gradient(135deg,#eef3f6,#dce5eb)}
+.previewChoiceImage img{width:100%;height:100%;object-fit:cover;display:block}
+.previewChoiceTag{position:absolute;top:12px;left:12px;padding:7px 10px;border-radius:6px;background:#14212ddd;color:#fff;font-size:10px;letter-spacing:1.3px;font-weight:800}
+.previewChoiceCard strong,.previewChoiceCard small{display:block;margin-left:16px;margin-right:16px}
+.previewChoiceCard strong{margin-top:14px;font-size:17px}
+.previewChoiceCard small{margin-top:4px;margin-bottom:16px;color:#718096;font-size:12px}
+@media(max-width:600px){.previewChoiceOverlay{padding:18px;gap:18px}.previewChoiceHeading h1{font-size:22px}.previewChoiceGrid{grid-template-columns:1fr;max-width:360px;gap:12px}.previewChoiceImage{height:135px}}
