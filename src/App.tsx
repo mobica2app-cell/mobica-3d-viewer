@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Engine, Scene, ArcRotateCamera, Vector3, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh } from '@babylonjs/core'
+import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh } from '@babylonjs/core'
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader'
 import '@babylonjs/loaders/glTF'
 import { GLTF2Export } from '@babylonjs/serializers/glTF'
@@ -694,7 +694,26 @@ function EditorApp() {
       setStatus('A layer cannot be moved inside itself or one of its descendants.')
       return
     }
-    moving.forEach(node => node.setParent(target, true))
+    if (!(target instanceof TransformNode) || moving.some(node => !(node instanceof TransformNode))) {
+      setStatus('These layers cannot be re-parented because they are not transform nodes.')
+      return
+    }
+    moving.forEach(node => {
+      // Preserve the object's world transform while changing its hierarchy parent.
+      node.computeWorldMatrix(true)
+      const world = node.getWorldMatrix().clone()
+      target.computeWorldMatrix(true)
+      const parentInverse = target.getWorldMatrix().clone().invert()
+      const local = world.multiply(parentInverse)
+      const scaling = Vector3.One()
+      const rotation = new Quaternion()
+      const position = Vector3.Zero()
+      local.decompose(scaling, rotation, position)
+      node.parent = target
+      node.scaling.copyFrom(scaling)
+      node.rotationQuaternion = rotation
+      node.position.copyFrom(position)
+    })
     setMoveTargetId('')
     refresh()
     invalidateExportSizes()
