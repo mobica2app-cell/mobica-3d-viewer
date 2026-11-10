@@ -1293,7 +1293,6 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const [remaining, setRemaining] = useState('')
   const [activeTab, setActiveTab] = useState<'visible' | 'all'>('visible')
   const [viewerEntered, setViewerEntered] = useState(false)
-  const [previewThumbs, setPreviewThumbs] = useState<{ opened: string; closed: string } | null>(null)
   const [previewReady, setPreviewReady] = useState(false)
   const [previewProgress, setPreviewProgress] = useState('Preparing model preview…')
   const cameraRef = useRef<ArcRotateCamera | null>(null)
@@ -1307,7 +1306,6 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     let cancelled = false
     setPreviewReady(false)
     setViewerEntered(false)
-    setPreviewThumbs(null)
     setError('')
     setPreviewProgress('Checking share links…')
     const fetchShare = async (shareId: string) => {
@@ -1432,14 +1430,8 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         camera.radius = Math.max(visible.size.length() * 0.75, 0.5)
         camera.maxZ = Math.max(camera.radius * 100, 100)
         camera.wheelPrecision = Math.max(10, camera.radius * 8)
-        // Capture image previews for both shared variants.
-        activateVariant(visible)
-        scene.render()
-        const openedThumb = canvas.toDataURL('image/jpeg', 0.82)
-        activateVariant(all)
-        scene.render()
-        const closedThumb = canvas.toDataURL('image/jpeg', 0.82)
-        setPreviewThumbs({ opened: openedThumb, closed: closedThumb })
+        // The choice screen uses fixed brand images from /public/images,
+        // shared by every model. Do not capture model-specific canvas thumbnails.
         activateVariant(activeTab === 'all' ? all : visible)
         const activeWalls = visible.walls
         setPreviewProgress(activeWalls.length ? 'Studio cutaway ready' : 'Model loaded · no wall groups detected for automatic cutaway.')
@@ -1495,15 +1487,15 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     </header>
     <main className={`sharedViewport ${!previewReady ? 'previewLoading' : ''}`}>
       <canvas ref={canvasRef}/>
-      {previewReady && !viewerEntered && !error && previewThumbs && <div className="previewChoiceOverlay">
+      {previewReady && !viewerEntered && !error && <div className="previewChoiceOverlay">
         <div className="previewChoiceHeading"><h1>Choose model view</h1><p>Opened has no manually hidden layers. Closed includes all layers.</p></div>
         <div className="previewChoiceGrid">
           <button className="previewChoiceCard" onClick={() => { setActiveTab('visible'); setViewerEntered(true) }}>
-            <div className="previewChoiceImage"><img src={previewThumbs.opened} alt="Opened model preview"/><span className="previewChoiceTag">OPENED</span></div>
+            <div className="previewChoiceImage"><img src="/images/opened-preview.jpg" alt="Opened model preview" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><span className="previewChoiceTag">OPENED</span></div>
             <strong>Opened</strong><small>Without hidden layers</small>
           </button>
           <button className="previewChoiceCard" onClick={() => { setActiveTab('all'); setViewerEntered(true) }}>
-            <div className="previewChoiceImage"><img src={previewThumbs.closed} alt="Closed model preview"/><span className="previewChoiceTag">CLOSED</span></div>
+            <div className="previewChoiceImage"><img src="/images/closed-preview.jpg" alt="Closed model preview" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><span className="previewChoiceTag">CLOSED</span></div>
             <strong>Closed</strong><small>Includes hidden layers</small>
           </button>
         </div>
