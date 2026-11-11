@@ -1658,11 +1658,11 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         <div className="previewChoiceHeading"><h1>Choose model view</h1><p>Inner division shows the model without manually hidden layers. Outer division includes all layers.</p></div>
         <div className="previewChoiceGrid">
           <button className="previewChoiceCard" onClick={() => { setActiveTab('visible'); setViewerEntered(true) }}>
-            <div className="previewChoiceImage"><img src="/images/opened-preview.jpg" alt="Inner division model preview" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><span className="previewChoiceTag">INNER DIVISION</span></div>
+            <div className="previewChoiceImage previewChoiceImageInner"><img className="previewSwapPrimary" src="/images/opened-preview.jpg" alt="Inner division model preview" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><img className="previewSwapSecondary" src="/images/closed-preview.jpg" alt="" aria-hidden="true" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><span className="previewChoiceTag">INNER DIVISION</span></div>
             <strong>Inner division</strong><small>Without manually hidden layers</small>
           </button>
           <button className="previewChoiceCard" onClick={() => { setActiveTab('all'); setViewerEntered(true) }}>
-            <div className="previewChoiceImage"><img src="/images/closed-preview.jpg" alt="Outer division model preview" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><span className="previewChoiceTag">OUTER DIVISION</span></div>
+            <div className="previewChoiceImage previewChoiceImageOuter"><img className="previewSwapPrimary" src="/images/closed-preview.jpg" alt="Outer division model preview" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><img className="previewSwapSecondary" src="/images/opened-preview.jpg" alt="" aria-hidden="true" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><span className="previewChoiceTag">OUTER DIVISION</span></div>
             <strong>Outer division</strong><small>Includes all layers</small>
           </button>
         </div>
