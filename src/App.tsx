@@ -1461,17 +1461,21 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
       // Keep the previous desktop framing; only mobile uses the wider framing.
       // ArcRotateCamera radius grows as the camera moves farther away.
       const isSmall = canvas.clientWidth <= 600
-      const framingFactor = isSmall ? 1.35 : 1.35
+      const framingFactor = isSmall ? 0.9 : 0.9
       return Math.max(size.length() * framingFactor, 1)
     }
 
     const updateOverviewViewport = () => {
       const canvasWidth = canvas.clientWidth
+      const canvasHeight = canvas.clientHeight
       const isSmall = canvasWidth <= 600
-      const width = isSmall ? 0.26 : 0.18
-      const height = isSmall ? 0.1926 : 0.15
-      const margin = 0.025
-      overviewCamera.viewport = new Viewport(1 - width - margin, 1 - height - margin, width, height)
+      // Keep the overview render area perfectly square so the model is centered
+      // first, with the CSS circle following the exact same bounds.
+      const diameter = Math.min(canvasWidth * (isSmall ? 0.26 : 0.18), isSmall ? 150 : 190)
+      const margin = 12
+      const width = diameter / canvasWidth
+      const height = diameter / canvasHeight
+      overviewCamera.viewport = new Viewport(1 - width - margin / canvasWidth, 1 - height - margin / canvasHeight, width, height)
     }
     updateOverviewViewport()
     let disposed = false
@@ -1594,7 +1598,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     sharedEd.activeCutawaySignature = ''
     if (overviewCamera) {
       overviewCamera.setTarget(variant.center)
-      overviewCamera.radius = Math.max(variant.size.length() * (window.innerWidth <= 600 ? 1.35 : 1.35), 1)
+      overviewCamera.radius = Math.max(variant.size.length() * 0.9, 0.5)
       overviewCamera.maxZ = Math.max(overviewCamera.radius * 100, 100)
     }
   }, [activeTab, previewReady])
