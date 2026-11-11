@@ -13,6 +13,35 @@ const cutawayBaseVisibility = new WeakMap<AbstractMesh, boolean>()
 type Editor = { scene: Scene; camera: ArcRotateCamera; highlight: HighlightLayer; nodes: Map<number, Node>; rootNodes: Node[]; cutawayWalls: CutawayWall[]; cutawayMaterials: Map<number, CutawayMaterial>; cutawayEnabled: boolean; activeCutawaySignature: string; cutawayCenter: Vector3; cutawaySize: Vector3 }
 type ModelSnapshot = { hiddenIds: Set<number>; deletedIds: Set<number>; activeGeneratedIds: Set<number> }
 
+
+// Keep desktop mouse orbit/pan unchanged, make desktop wheel/trackpad zoom more
+// responsive, and deliberately damp all touch gestures on phones/tablets.
+function configureCameraSensitivity(camera: ArcRotateCamera, isTouchDevice: boolean) {
+  camera.wheelPrecision = isTouchDevice ? 110 : 32
+  camera.wheelDeltaPercentage = isTouchDevice ? 0.005 : 0.02
+  camera.panningSensibility = isTouchDevice ? 900 : 180
+
+  const pointerInput = (camera.inputs.attached as unknown as {
+    pointers?: {
+      angularSensibilityX?: number
+      angularSensibilityY?: number
+      pinchPrecision?: number
+      panningSensibility?: number
+    }
+  }).pointers
+
+  if (pointerInput) {
+    pointerInput.angularSensibilityX = isTouchDevice ? 1900 : 1000
+    pointerInput.angularSensibilityY = isTouchDevice ? 1900 : 1000
+    pointerInput.pinchPrecision = isTouchDevice ? 30 : 12
+    if (isTouchDevice) pointerInput.panningSensibility = 900
+  }
+}
+
+function isTouchViewport() {
+  return window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(max-width: 768px)').matches
+}
+
 function childrenOf(node: Node): Node[] { return node.getChildren(undefined, true) }
 function descendants(node: Node): Node[] { return [node, ...node.getDescendants(false)] }
 function setNodeVisible(node: Node, visible: boolean) {
@@ -593,14 +622,12 @@ function EditorApp() {
     scene.imageProcessingConfiguration.contrast = 1
     const camera = new ArcRotateCamera('camera', -Math.PI / 3, Math.PI / 2.7, 8, Vector3.Zero(), scene)
     camera.attachControl(canvasRef.current, false)
-    camera.wheelPrecision = 55
-    camera.wheelDeltaPercentage = 0.01
+    configureCameraSensitivity(camera, isTouchViewport())
     // Keep wheel gestures inside the 3D viewport; never zoom/scroll the page.
     const preventPageWheel = (event: WheelEvent) => { event.preventDefault(); event.stopPropagation() }
     canvasRef.current.addEventListener('wheel', preventPageWheel, { passive: false })
     camera.lowerRadiusLimit = 0.08
     camera.minZ = 0.01
-    camera.panningSensibility = 180
     const hemi = new HemisphericLight('soft-fill', new Vector3(0, 1, 0), scene)
     hemi.intensity = 0.38
     const sun = new DirectionalLight('soft-key', new Vector3(-0.6, -1.5, -0.7), scene)
@@ -710,7 +737,7 @@ function EditorApp() {
         ed.camera.setTarget(center)
         ed.camera.radius = radius
         ed.camera.maxZ = Math.max(radius * 100, 100)
-        ed.camera.wheelPrecision = Math.max(10, radius * 8)
+        configureCameraSensitivity(ed.camera, isTouchViewport())
       }
       setFilename(file.name)
       setExpanded(new Set(roots.map(r => r.uniqueId)))
@@ -1386,11 +1413,9 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     scene.imageProcessingConfiguration.contrast = 1
     const camera = new ArcRotateCamera('shared-camera', -Math.PI / 3, Math.PI / 2.7, 8, Vector3.Zero(), scene)
     camera.attachControl(canvas, false)
-    camera.wheelPrecision = 55
-    camera.wheelDeltaPercentage = 0.01
+    configureCameraSensitivity(camera, isTouchViewport())
     camera.lowerRadiusLimit = 0.08
     camera.minZ = 0.01
-    camera.panningSensibility = 180
     cameraRef.current = camera
     const hemi = new HemisphericLight('soft-fill', new Vector3(0, 1, 0), scene)
     hemi.intensity = 0.38
@@ -1463,7 +1488,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         camera.setTarget(visible.center)
         camera.radius = Math.max(visible.size.length() * 0.75, 0.5)
         camera.maxZ = Math.max(camera.radius * 100, 100)
-        camera.wheelPrecision = Math.max(10, camera.radius * 8)
+        configureCameraSensitivity(camera, isTouchViewport())
         // The choice screen uses fixed brand images from /public/images,
         // shared by every model. Do not capture model-specific canvas thumbnails.
         activateVariant(activeTab === 'all' ? all : visible)
