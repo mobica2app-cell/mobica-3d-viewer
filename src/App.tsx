@@ -1461,7 +1461,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
       // Keep the previous desktop framing; only mobile uses the wider framing.
       // ArcRotateCamera radius grows as the camera moves farther away.
       const isSmall = canvas.clientWidth <= 600
-      const framingFactor = isSmall ? 0.675 : 5.4
+      const framingFactor = isSmall ? 1.35 : 1.35
       return Math.max(size.length() * framingFactor, 1)
     }
 
@@ -1594,7 +1594,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     sharedEd.activeCutawaySignature = ''
     if (overviewCamera) {
       overviewCamera.setTarget(variant.center)
-      overviewCamera.radius = Math.max(variant.size.length() * (window.innerWidth <= 600 ? 0.675 : 5.4), 1)
+      overviewCamera.radius = Math.max(variant.size.length() * (window.innerWidth <= 600 ? 1.35 : 1.35), 1)
       overviewCamera.maxZ = Math.max(overviewCamera.radius * 100, 100)
     }
   }, [activeTab, previewReady])
