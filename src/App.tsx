@@ -1477,9 +1477,12 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         : Math.min(canvasWidth * 0.142, 190)
       const padding = isSmall ? 8 : 10
       const innerDiameter = Math.max(diameter - padding * 2, 1)
-      const edge = canvasWidth * 0.025
-      const left = canvasWidth - edge - diameter + padding
-      const top = edge + padding
+      // CSS right is relative to the container width, while CSS top is
+      // relative to its height. Keep the camera viewport on those exact axes.
+      const edgeX = canvasWidth * 0.025
+      const edgeY = canvasHeight * 0.025
+      const left = canvasWidth - edgeX - diameter + padding
+      const top = edgeY + padding
       const width = innerDiameter / canvasWidth
       const height = innerDiameter / canvasHeight
       const x = left / canvasWidth
