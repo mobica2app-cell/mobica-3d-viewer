@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh } from '@babylonjs/core'
+import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh, Viewport } from '@babylonjs/core'
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader'
 import '@babylonjs/loaders/glTF'
 import { GLTF2Export } from '@babylonjs/serializers/glTF'
@@ -1357,6 +1357,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const [previewReady, setPreviewReady] = useState(false)
   const [previewProgress, setPreviewProgress] = useState('Preparing model preview…')
   const cameraRef = useRef<ArcRotateCamera | null>(null)
+  const overviewCameraRef = useRef<ArcRotateCamera | null>(null)
   const sharedEditorRef = useRef<Editor | null>(null)
   const sharedVariantsRef = useRef<SharedModelVariants | null>(null)
 
@@ -1417,6 +1418,14 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     camera.lowerRadiusLimit = 0.08
     camera.minZ = 0.01
     cameraRef.current = camera
+    // A second camera renders a compact, always-complete overview of the same
+    // active model. Its orientation is synchronized with the main camera.
+    const overviewCamera = new ArcRotateCamera('shared-overview-camera', camera.alpha, camera.beta, 12, Vector3.Zero(), scene)
+    overviewCamera.inputs.clear()
+    overviewCamera.viewport = new Viewport(0.74, 0.68, 0.24, 0.28)
+    overviewCamera.lowerRadiusLimit = 0.08
+    overviewCamera.minZ = 0.01
+    overviewCameraRef.current = overviewCamera
     const hemi = new HemisphericLight('soft-fill', new Vector3(0, 1, 0), scene)
     hemi.intensity = 0.38
     const sun = new DirectionalLight('soft-key', new Vector3(-0.6, -1.5, -0.7), scene)
@@ -1431,6 +1440,32 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     }
     sharedEditorRef.current = sharedEd
     sharedVariantsRef.current = null
+    // The overview camera temporarily restores the cached wall visibility for
+    // its render only. The main camera's cutaway is reapplied immediately after.
+    scene.onBeforeCameraRenderObservable.add(renderingCamera => {
+      if (renderingCamera !== overviewCamera) return
+      for (const wall of sharedEd.cutawayWalls) {
+        for (const mesh of wall.meshes) {
+          mesh.isVisible = cutawayBaseVisibility.get(mesh) ?? true
+        }
+      }
+    })
+    scene.onAfterCameraRenderObservable.add(renderingCamera => {
+      if (renderingCamera !== overviewCamera) return
+      sharedEd.activeCutawaySignature = ''
+      if (sharedEd.cutawayEnabled && sharedEd.cutawayWalls.length) {
+        updateAutomaticCutaway(sharedEd, sharedEd.cutawayCenter, sharedEd.cutawaySize)
+      }
+    })
+    const updateOverviewViewport = () => {
+      const canvasWidth = canvas.clientWidth
+      const isSmall = canvasWidth <= 600
+      const width = isSmall ? 0.35 : 0.24
+      const height = isSmall ? 0.26 : 0.20
+      const margin = 0.025
+      overviewCamera.viewport = new Viewport(1 - width - margin, 1 - height - margin, width, height)
+    }
+    updateOverviewViewport()
     let disposed = false
 
     const loadVariant = async (url: string) => {
@@ -1488,6 +1523,9 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         camera.setTarget(visible.center)
         camera.radius = Math.max(visible.size.length() * 0.75, 0.5)
         camera.maxZ = Math.max(camera.radius * 100, 100)
+        overviewCamera.setTarget(visible.center)
+        overviewCamera.radius = Math.max(visible.size.length() * 1.35, 1)
+        overviewCamera.maxZ = Math.max(overviewCamera.radius * 100, 100)
         configureCameraSensitivity(camera, isTouchViewport())
         // The choice screen uses fixed brand images from /public/images,
         // shared by every model. Do not capture model-specific canvas thumbnails.
@@ -1502,26 +1540,39 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
 
     void loadModels()
     engine.runRenderLoop(() => {
+      overviewCamera.alpha = camera.alpha
+      overviewCamera.beta = camera.beta
       if (sharedEd.cutawayEnabled && sharedEd.cutawayWalls.length) {
         updateAutomaticCutaway(sharedEd, sharedEd.cutawayCenter, sharedEd.cutawaySize)
       }
       scene.render()
     })
-    const resize = () => engine.resize()
+    const resize = () => { engine.resize(); updateOverviewViewport() }
     window.addEventListener('resize', resize)
     return () => {
       disposed = true
       sharedEditorRef.current = null
       sharedVariantsRef.current = null
       cameraRef.current = null
+      overviewCameraRef.current = null
       window.removeEventListener('resize', resize)
       engine.dispose()
     }
   }, [info])
 
   useEffect(() => {
+    const scene = sharedEditorRef.current?.scene
+    const mainCamera = cameraRef.current
+    const overviewCamera = overviewCameraRef.current
+    if (scene && mainCamera && overviewCamera) {
+      scene.activeCameras = viewerEntered ? [mainCamera, overviewCamera] : [mainCamera]
+    }
+  }, [viewerEntered, previewReady])
+
+  useEffect(() => {
     const variants = sharedVariantsRef.current
     const sharedEd = sharedEditorRef.current
+    const overviewCamera = overviewCameraRef.current
     if (!variants || !sharedEd || !previewReady) return
     const variant = activeTab === 'all' ? variants.all : variants.visible
     for (const root of [...variants.visible.roots, ...variants.all.roots]) root.setEnabled(false)
@@ -1533,6 +1584,11 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     sharedEd.cutawaySize.copyFrom(variant.size)
     sharedEd.cutawayEnabled = true
     sharedEd.activeCutawaySignature = ''
+    if (overviewCamera) {
+      overviewCamera.setTarget(variant.center)
+      overviewCamera.radius = Math.max(variant.size.length() * 1.35, 1)
+      overviewCamera.maxZ = Math.max(overviewCamera.radius * 100, 100)
+    }
   }, [activeTab, previewReady])
 
   return <div className="sharedPage">
@@ -1561,7 +1617,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
       </div>}
       {!previewReady && !error && <div className="sharedMessage previewLoadingMessage"><div className="previewSpinner"/><h2>Preparing your 3D model</h2><p>{previewProgress}</p><small>Please wait while the shared model loads.</small></div>}
       {error && <div className="sharedMessage errorMessage"><h2>Link unavailable</h2><p>{error}</p></div>}
-      {previewReady && viewerEntered && !error && <><div className="sharedFileName">{info?.filename}</div><div className="sharedHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</div></>}
+      {previewReady && viewerEntered && !error && <><div className="sharedFileName">{info?.filename}</div><div className="modelOverviewFrame"><span>FULL MODEL</span></div><div className="sharedHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</div></>}
     </main>
   </div>
 }
