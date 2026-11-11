@@ -179,8 +179,8 @@ function collectCutawayWalls(nodes: Node[]): CutawayWall[] {
 function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, _modelSize: Vector3) {
   // Wall membership and mesh references are precomputed when the GLB loads.
   // Camera azimuth is compared with each wall's outward direction around the
-  // room. Facing a wall within 5 degrees hides only that wall. Beyond that
-  // narrow straight-on zone, hide that wall plus the adjacent wall in the
+  // room. Facing a wall within 15 degrees hides only that wall. Beyond that
+  // straight-on zone, hide that wall plus the adjacent wall in the
   // direction the camera has rotated.
   const cameraPosition = ed.camera.position
   const cameraX = cameraPosition.x - modelCenter.x
@@ -205,12 +205,12 @@ function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, _modelSize: Ve
 
   let selectedWalls: CutawayWall[] = []
   if (nearest) {
-    const straightOnTolerance = 5 * Math.PI / 180
+    const straightOnTolerance = 15 * Math.PI / 180
     if (Math.abs(nearest.delta) <= straightOnTolerance) {
       // Directly in front of a wall: reveal the other three walls.
       selectedWalls = [nearest.wall]
     } else {
-      // Off-axis by more than 5 degrees: also hide the adjacent wall on the
+      // Off-axis by more than 15 degrees: also hide the adjacent wall on the
       // side toward which the camera has rotated.
       const direction = Math.sign(nearest.delta)
       const adjacent = positionedWalls
