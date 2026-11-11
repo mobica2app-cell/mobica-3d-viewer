@@ -1460,18 +1460,31 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     const getOverviewRadius = (size: Vector3) => {
       // Keep the previous desktop framing; only mobile uses the wider framing.
       // ArcRotateCamera radius grows as the camera moves farther away.
-      const isSmall = canvas.clientWidth <= 600
-      const framingFactor = isSmall ? 1.35 : 1.35
-      return Math.max(size.length() * framingFactor, 1)
+      // Keep the visible model at the exact same apparent size as before.
+      // The bounds below now use the full dimensions, so halve the old factor
+      // that was inadvertently applied to half-sized bounds.
+      return Math.max(size.length() * 0.675, 1)
     }
 
     const updateOverviewViewport = () => {
       const canvasWidth = canvas.clientWidth
+      const canvasHeight = canvas.clientHeight
       const isSmall = canvasWidth <= 600
-      const width = isSmall ? 0.26 : 0.18
-      const height = isSmall ? 0.1926 : 0.15
-      const margin = 0.025
-      overviewCamera.viewport = new Viewport(1 - width - margin, 1 - height - margin, width, height)
+      // Match the Babylon camera viewport to the circle's inner area.
+      // The CSS circle is the outer frame; this inset is its even padding.
+      const diameter = isSmall
+        ? canvasWidth * 0.23
+        : Math.min(canvasWidth * 0.142, 190)
+      const padding = isSmall ? 8 : 10
+      const innerDiameter = Math.max(diameter - padding * 2, 1)
+      const edge = canvasWidth * 0.025
+      const left = canvasWidth - edge - diameter + padding
+      const top = edge + padding
+      const width = innerDiameter / canvasWidth
+      const height = innerDiameter / canvasHeight
+      const x = left / canvasWidth
+      const y = 1 - (top + innerDiameter) / canvasHeight
+      overviewCamera.viewport = new Viewport(x, y, width, height)
     }
     updateOverviewViewport()
     let disposed = false
@@ -1499,8 +1512,9 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         min = Vector3.Minimize(min, bounds.minimumWorld)
         max = Vector3.Maximize(max, bounds.maximumWorld)
       }
-      const center = geometry.length ? min.add(max).scale(0.5) : Vector3.Zero()
+      // Calculate full dimensions before center; Vector3.add mutates min.
       const size = geometry.length ? max.subtract(min) : Vector3.One()
+      const center = geometry.length ? min.add(max).scale(0.5) : Vector3.Zero()
       return { roots, walls, materials, center, size }
     }
 
