@@ -213,7 +213,7 @@
   z-index:5;
   top:2.5%;
   right:2.5%;
-  width:24%;
+  width:18%;
   aspect-ratio:1.2;
   border:1px solid rgba(35,49,66,.42);
   border-radius:10px;
@@ -237,7 +237,7 @@
 }
 @media(max-width:600px){
   .modelOverviewFrame{
-    width:35%;
+    width:26%;
     aspect-ratio:1.35;
     top:2%;
     right:2%;

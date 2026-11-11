@@ -1460,8 +1460,8 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     const updateOverviewViewport = () => {
       const canvasWidth = canvas.clientWidth
       const isSmall = canvasWidth <= 600
-      const width = isSmall ? 0.35 : 0.24
-      const height = isSmall ? 0.26 : 0.20
+      const width = isSmall ? 0.26 : 0.18
+      const height = isSmall ? 0.1926 : 0.15
       const margin = 0.025
       overviewCamera.viewport = new Viewport(1 - width - margin, 1 - height - margin, width, height)
     }
