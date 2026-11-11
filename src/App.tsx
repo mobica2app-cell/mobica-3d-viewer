@@ -1458,11 +1458,10 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
       }
     })
     const getOverviewRadius = (size: Vector3) => {
-      // Desktop: zoom the model in 2x inside the same overview frame.
-      // Mobile: zoom it out 2x compared with the previous framing so the
-      // complete model has more breathing room in the smaller inset.
+      // Keep the previous desktop framing; only mobile uses the wider framing.
+      // ArcRotateCamera radius grows as the camera moves farther away.
       const isSmall = canvas.clientWidth <= 600
-      const framingFactor = isSmall ? 2.7 : 0.675
+      const framingFactor = isSmall ? 0.675 : 5.4
       return Math.max(size.length() * framingFactor, 1)
     }
 
@@ -1595,7 +1594,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     sharedEd.activeCutawaySignature = ''
     if (overviewCamera) {
       overviewCamera.setTarget(variant.center)
-      overviewCamera.radius = Math.max(variant.size.length() * (window.innerWidth <= 600 ? 2.7 : 0.675), 1)
+      overviewCamera.radius = Math.max(variant.size.length() * (window.innerWidth <= 600 ? 0.675 : 5.4), 1)
       overviewCamera.maxZ = Math.max(overviewCamera.radius * 100, 100)
     }
   }, [activeTab, previewReady])
