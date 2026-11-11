@@ -1457,6 +1457,15 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         updateAutomaticCutaway(sharedEd, sharedEd.cutawayCenter, sharedEd.cutawaySize)
       }
     })
+    const getOverviewRadius = (size: Vector3) => {
+      // Desktop: zoom the model in 2x inside the same overview frame.
+      // Mobile: zoom it out 2x compared with the previous framing so the
+      // complete model has more breathing room in the smaller inset.
+      const isSmall = canvas.clientWidth <= 600
+      const framingFactor = isSmall ? 2.7 : 0.675
+      return Math.max(size.length() * framingFactor, 1)
+    }
+
     const updateOverviewViewport = () => {
       const canvasWidth = canvas.clientWidth
       const isSmall = canvasWidth <= 600
@@ -1524,7 +1533,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         camera.radius = Math.max(visible.size.length() * 0.75, 0.5)
         camera.maxZ = Math.max(camera.radius * 100, 100)
         overviewCamera.setTarget(visible.center)
-        overviewCamera.radius = Math.max(visible.size.length() * 1.35, 1)
+        overviewCamera.radius = getOverviewRadius(visible.size)
         overviewCamera.maxZ = Math.max(overviewCamera.radius * 100, 100)
         configureCameraSensitivity(camera, isTouchViewport())
         // The choice screen uses fixed brand images from /public/images,
@@ -1586,7 +1595,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     sharedEd.activeCutawaySignature = ''
     if (overviewCamera) {
       overviewCamera.setTarget(variant.center)
-      overviewCamera.radius = Math.max(variant.size.length() * 1.35, 1)
+      overviewCamera.radius = Math.max(variant.size.length() * (window.innerWidth <= 600 ? 2.7 : 0.675), 1)
       overviewCamera.maxZ = Math.max(overviewCamera.radius * 100, 100)
     }
   }, [activeTab, previewReady])
