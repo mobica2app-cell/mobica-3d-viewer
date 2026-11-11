@@ -1461,21 +1461,17 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
       // Keep the previous desktop framing; only mobile uses the wider framing.
       // ArcRotateCamera radius grows as the camera moves farther away.
       const isSmall = canvas.clientWidth <= 600
-      const framingFactor = isSmall ? 0.9 : 0.9
+      const framingFactor = isSmall ? 1.35 : 1.35
       return Math.max(size.length() * framingFactor, 1)
     }
 
     const updateOverviewViewport = () => {
       const canvasWidth = canvas.clientWidth
-      const canvasHeight = canvas.clientHeight
       const isSmall = canvasWidth <= 600
-      // Keep the overview render area perfectly square so the model is centered
-      // first, with the CSS circle following the exact same bounds.
-      const diameter = Math.min(canvasWidth * (isSmall ? 0.26 : 0.18), isSmall ? 150 : 190)
-      const margin = 12
-      const width = diameter / canvasWidth
-      const height = diameter / canvasHeight
-      overviewCamera.viewport = new Viewport(1 - width - margin / canvasWidth, 1 - height - margin / canvasHeight, width, height)
+      const width = isSmall ? 0.26 : 0.18
+      const height = isSmall ? 0.1926 : 0.15
+      const margin = 0.025
+      overviewCamera.viewport = new Viewport(1 - width - margin, 1 - height - margin, width, height)
     }
     updateOverviewViewport()
     let disposed = false
@@ -1532,6 +1528,10 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         ])
         if (disposed) return
         sharedVariantsRef.current = { visible, all }
+        // A stale Cloudflare/Vite HTML cache can reference a hashed Babylon
+        // loader chunk that no longer exists after deployment. Clear the
+        // one-shot recovery marker after a successful model load.
+        try { sessionStorage.removeItem('mobica-shared-chunk-retry') } catch { /* storage may be unavailable */ }
         camera.setTarget(visible.center)
         camera.radius = Math.max(visible.size.length() * 0.75, 0.5)
         camera.maxZ = Math.max(camera.radius * 100, 100)
@@ -1546,7 +1546,30 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         setPreviewProgress(activeWalls.length ? 'Studio cutaway ready' : 'Model loaded · no wall groups detected for automatic cutaway.')
         setPreviewReady(true)
       } catch (err) {
-        if (!disposed) setError(`Could not load shared model: ${String(err)}`)
+        if (disposed) return
+        const message = String(err)
+        const isDynamicChunkFailure =
+          message.includes('Failed to fetch dynamically imported module') ||
+          message.includes('Importing a module script failed') ||
+          message.includes('ChunkLoadError')
+        if (isDynamicChunkFailure) {
+          // Reload the latest app shell once. This recovers when the browser
+          // has cached an old index.html that points at a deleted hashed chunk.
+          let alreadyRetried = false
+          try {
+            alreadyRetried = sessionStorage.getItem('mobica-shared-chunk-retry') === '1'
+            if (!alreadyRetried) sessionStorage.setItem('mobica-shared-chunk-retry', '1')
+          } catch { alreadyRetried = true }
+          if (!alreadyRetried) {
+            const url = new URL(window.location.href)
+            url.searchParams.set('asset-retry', String(Date.now()))
+            window.location.replace(url.toString())
+            return
+          }
+          setError('The shared viewer could not load a required 3D module. Please refresh the page or reopen the share link. If this keeps happening, the deployed asset cache needs to be refreshed.')
+          return
+        }
+        setError(`Could not load shared model: ${message}`)
       }
     }
 
@@ -1598,7 +1621,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     sharedEd.activeCutawaySignature = ''
     if (overviewCamera) {
       overviewCamera.setTarget(variant.center)
-      overviewCamera.radius = Math.max(variant.size.length() * 0.9, 0.5)
+      overviewCamera.radius = Math.max(variant.size.length() * (window.innerWidth <= 600 ? 1.35 : 1.35), 1)
       overviewCamera.maxZ = Math.max(overviewCamera.radius * 100, 100)
     }
   }, [activeTab, previewReady])
