@@ -205,3 +205,20 @@
   .sharedHeader .sharedMeta span{gap:4px}
   .sharedHeader .sharedTabs button{padding:7px 16px}
 }
+
+/* Circular frame around the compact synchronized model in the shared preview. */
+.sharedViewport .overviewCircle{
+  position:absolute;z-index:4;right:2.2%;top:2.2%;
+  width:14.2vw;height:14.2vw;max-width:190px;max-height:190px;
+  border:2px solid rgba(15,155,142,.72);border-radius:50%;
+  box-shadow:0 0 0 5px rgba(15,155,142,.10),0 5px 22px rgba(15,35,48,.12);
+  pointer-events:none;
+}
+.sharedViewport .sharedHint{font-size:14px;padding:12px 18px;font-weight:600;letter-spacing:.1px}
+.mobileHint{display:none}
+@media(max-width:600px){
+  .sharedViewport .overviewCircle{right:1.5%;top:1.5%;width:23vw;height:23vw;border-width:2px;box-shadow:0 0 0 4px rgba(15,155,142,.10),0 4px 16px rgba(15,35,48,.12)}
+  .sharedViewport .sharedHint{font-size:13px;padding:12px 16px;max-width:94%;}
+  .desktopHint{display:none}
+  .mobileHint{display:inline}
+}

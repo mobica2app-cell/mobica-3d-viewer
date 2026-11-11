@@ -1625,7 +1625,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
       </div>}
       {!previewReady && !error && <div className="sharedMessage previewLoadingMessage"><div className="previewSpinner"/><h2>Preparing your 3D model</h2><p>{previewProgress}</p><small>Please wait while the shared model loads.</small></div>}
       {error && <div className="sharedMessage errorMessage"><h2>Link unavailable</h2><p>{error}</p></div>}
-      {previewReady && viewerEntered && !error && <><div className="sharedFileName">{info?.filename}</div><div className="sharedHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</div></>}
+      {previewReady && viewerEntered && !error && <><div className="sharedFileName">{info?.filename}</div><div className="overviewCircle" aria-hidden="true"/><div className="sharedHint"><span className="desktopHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</span><span className="mobileHint">Drag to rotate · Pinch to zoom</span></div></>}
     </main>
   </div>
 }
