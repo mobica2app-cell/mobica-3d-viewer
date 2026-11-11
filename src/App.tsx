@@ -1604,29 +1604,29 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     <header className="sharedHeader">
       <div className="brand"><div><strong>MOBICA</strong><small>3D MODEL PREVIEW</small></div></div>
       {viewerEntered && <div className="sharedTabs">
-        <button className={activeTab === 'visible' ? 'active' : ''} onClick={() => setActiveTab('visible')} disabled={!previewReady}>Opened</button>
-        <button className={activeTab === 'all' ? 'active' : ''} onClick={() => setActiveTab('all')} disabled={!previewReady}>Closed</button>
+        <button className={activeTab === 'visible' ? 'active' : ''} onClick={() => setActiveTab('visible')} disabled={!previewReady}>Inner division</button>
+        <button className={activeTab === 'all' ? 'active' : ''} onClick={() => setActiveTab('all')} disabled={!previewReady}>Outer division</button>
       </div>}
       <div className="sharedMeta"><span><Clock size={14}/> {remaining || 'Checking expiry…'}</span><span className="readOnlyTag">READ ONLY</span></div>
     </header>
     <main className={`sharedViewport ${!previewReady ? 'previewLoading' : ''}`}>
       <canvas ref={canvasRef}/>
       {previewReady && !viewerEntered && !error && <div className="previewChoiceOverlay">
-        <div className="previewChoiceHeading"><h1>Choose model view</h1><p>Opened has no manually hidden layers. Closed includes all layers.</p></div>
+        <div className="previewChoiceHeading"><h1>Choose model view</h1><p>Inner division shows the model without manually hidden layers. Outer division includes all layers.</p></div>
         <div className="previewChoiceGrid">
           <button className="previewChoiceCard" onClick={() => { setActiveTab('visible'); setViewerEntered(true) }}>
-            <div className="previewChoiceImage"><img src="/images/opened-preview.jpg" alt="Opened model preview" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><span className="previewChoiceTag">OPENED</span></div>
-            <strong>Opened</strong><small>Without hidden layers</small>
+            <div className="previewChoiceImage"><img src="/images/opened-preview.jpg" alt="Inner division model preview" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><span className="previewChoiceTag">INNER DIVISION</span></div>
+            <strong>Inner division</strong><small>Without manually hidden layers</small>
           </button>
           <button className="previewChoiceCard" onClick={() => { setActiveTab('all'); setViewerEntered(true) }}>
-            <div className="previewChoiceImage"><img src="/images/closed-preview.jpg" alt="Closed model preview" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><span className="previewChoiceTag">CLOSED</span></div>
-            <strong>Closed</strong><small>Includes hidden layers</small>
+            <div className="previewChoiceImage"><img src="/images/closed-preview.jpg" alt="Outer division model preview" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><span className="previewChoiceTag">OUTER DIVISION</span></div>
+            <strong>Outer division</strong><small>Includes all layers</small>
           </button>
         </div>
       </div>}
       {!previewReady && !error && <div className="sharedMessage previewLoadingMessage"><div className="previewSpinner"/><h2>Preparing your 3D model</h2><p>{previewProgress}</p><small>Please wait while the shared model loads.</small></div>}
       {error && <div className="sharedMessage errorMessage"><h2>Link unavailable</h2><p>{error}</p></div>}
-      {previewReady && viewerEntered && !error && <><div className="sharedFileName">{info?.filename}</div><div className="modelOverviewFrame"><span>FULL MODEL</span></div><div className="sharedHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</div></>}
+      {previewReady && viewerEntered && !error && <><div className="sharedFileName">{info?.filename}</div><div className="sharedHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</div></>}
     </main>
   </div>
 }
