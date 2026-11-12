@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh, Viewport } from '@babylonjs/core'
+import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh, Viewport, ShadowGenerator } from '@babylonjs/core'
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader'
 import '@babylonjs/loaders/glTF'
 import { GLTF2Export } from '@babylonjs/serializers/glTF'
@@ -1409,9 +1409,11 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     const scene = new Scene(engine)
     scene.clearColor = new Color4(1, 1, 1, 1)
     scene.useRightHandedSystem = true
-    scene.imageProcessingConfiguration.toneMappingEnabled = false
-    scene.imageProcessingConfiguration.exposure = 1
-    scene.imageProcessingConfiguration.contrast = 1
+    // Shared preview uses a more photographic image pipeline than the editor.
+    // Keep imported PBR textures/material values intact; improve only rendering.
+    scene.imageProcessingConfiguration.toneMappingEnabled = true
+    scene.imageProcessingConfiguration.exposure = 1.08
+    scene.imageProcessingConfiguration.contrast = 1.12
     const camera = new ArcRotateCamera('shared-camera', -Math.PI / 3, Math.PI / 2.7, 8, Vector3.Zero(), scene)
     camera.attachControl(canvas, false)
     configureCameraSensitivity(camera, isTouchViewport())
@@ -1426,12 +1428,20 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     overviewCamera.lowerRadiusLimit = 0.08
     overviewCamera.minZ = 0.01
     overviewCameraRef.current = overviewCamera
-    const hemi = new HemisphericLight('soft-fill', new Vector3(0, 1, 0), scene)
-    hemi.intensity = 0.38
-    const sun = new DirectionalLight('soft-key', new Vector3(-0.6, -1.5, -0.7), scene)
-    sun.intensity = 0.55
+    const hemi = new HemisphericLight('preview-ambient-fill', new Vector3(0, 1, 0), scene)
+    hemi.intensity = 0.62
+    hemi.groundColor = new Color3(0.72, 0.76, 0.82)
+    const sun = new DirectionalLight('preview-soft-key', new Vector3(-0.6, -1.5, -0.7), scene)
+    sun.intensity = 1.15
+    sun.position = new Vector3(8, 12, 8)
+    // Soft real-time shadows add depth to seams, cushions and overlapping parts.
+    const shadowGenerator = new ShadowGenerator(window.innerWidth <= 600 ? 1024 : 2048, sun)
+    shadowGenerator.usePercentageCloserFiltering = true
+    shadowGenerator.filteringQuality = ShadowGenerator.QUALITY_HIGH
+    shadowGenerator.bias = 0.0005
+    shadowGenerator.normalBias = 0.02
     scene.environmentTexture = CubeTexture.CreateFromPrefilteredData('https://assets.babylonjs.com/environments/environmentSpecular.env', scene)
-    scene.environmentIntensity = 0.32
+    scene.environmentIntensity = 0.78
     const highlight = new HighlightLayer('shared-selection', scene)
     const sharedEd: Editor = {
       scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [],
@@ -1507,6 +1517,12 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         }
       }
       const geometry = result.meshes.filter(mesh => mesh.getTotalVertices() > 0)
+      // Preserve the GLB's authored materials and texture maps. Add the imported
+      // geometry to the preview shadow pass instead of inventing replacement materials.
+      for (const mesh of geometry) {
+        mesh.receiveShadows = true
+        shadowGenerator.addShadowCaster(mesh, true)
+      }
       let min = new Vector3(Infinity, Infinity, Infinity)
       let max = new Vector3(-Infinity, -Infinity, -Infinity)
       for (const mesh of geometry) {
