@@ -1365,7 +1365,7 @@ function createPreviewDetailNormal(scene: Scene, kind: PreviewSurfaceKind): Dyna
   const resolution = 256
   const texture = new DynamicTexture(`preview-detail-${kind}`, { width: resolution, height: resolution }, scene, false, Texture.BILINEAR_SAMPLINGMODE)
   const ctx = texture.getContext()
-  const image = ctx.createImageData(resolution, resolution)
+  const image = ctx.getImageData(0, 0, resolution, resolution)
   const heights = new Float32Array(resolution * resolution)
   const fract = (n: number) => n - Math.floor(n)
   const hash = (x: number, y: number) => fract(Math.sin(x * 127.1 + y * 311.7) * 43758.5453)
