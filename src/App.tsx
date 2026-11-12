@@ -1018,7 +1018,6 @@ function EditorApp() {
           material.roughness = preset.roughness
           material.metallic = preset.metallic
           if (material.bumpTexture) material.bumpTexture.level = preset.normal
-          if (material.normalTexture) material.normalTexture.level = preset.normal
         } else if (material instanceof StandardMaterial) {
           material.diffuseColor = Color3.FromHexString(preset.color)
           if (material.bumpTexture) material.bumpTexture.level = preset.normal
@@ -1078,7 +1077,6 @@ function EditorApp() {
       const material = mesh.material
       if (material instanceof PBRMaterial) {
         if (material.bumpTexture) material.bumpTexture.level = value
-        if (material.normalTexture) material.normalTexture.level = value
       } else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = value
     }
   }
