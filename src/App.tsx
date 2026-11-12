@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh, Viewport, DynamicTexture, DefaultRenderingPipeline, ShadowGenerator, ImageProcessingConfiguration } from '@babylonjs/core'
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader'
 import '@babylonjs/loaders/glTF'
+import { DracoDecoder } from '@babylonjs/core/Meshes/Compression/dracoDecoder'
 import { GLTF2Export } from '@babylonjs/serializers/glTF'
 import { Upload, Eye, EyeOff, Trash2, Download, Layers, Paintbrush, RotateCcw, Box, ChevronRight, ChevronDown, Share2, Copy, Clock, ExternalLink, Search, X, Undo2, Redo2, Scissors, Pencil } from 'lucide-react'
 import './styles.css'
@@ -98,6 +99,13 @@ function cloneMaterial(mesh: AbstractMesh) {
 }
 function findMeshes(node: Node): AbstractMesh[] { return descendants(node).filter((n): n is AbstractMesh => n instanceof AbstractMesh) }
 
+async function ensureDracoDecoderReady() {
+  if (!DracoDecoder.DefaultAvailable) {
+    throw new Error('This GLB requires Draco compression, but the Draco decoder is unavailable. Check the browser network connection and CDN access.')
+  }
+  await DracoDecoder.Default.whenReadyAsync()
+}
+
 // Split a mesh's triangles along a local-space axis plane. Both resulting meshes retain
 // their original material, UVs, vertex colors and interpolated normals.
 function splitMeshByPlane(source: Mesh, planePoint: Vector3, planeNormal: Vector3, scene: Scene): [Mesh, Mesh] | null {
@@ -189,8 +197,14 @@ function splitMeshByPlane(source: Mesh, planePoint: Vector3, planeNormal: Vector
 
 function collectCutawayWalls(nodes: Node[]): CutawayWall[] {
   const all = nodes.flatMap(node => descendants(node))
-  const wallPattern = /(^|[ _.-])(wall|walls|mur|partition)([ _.-]|$)/i
-  const wallNodes = all.filter(node => wallPattern.test(node.name || ''))
+  // Only treat explicitly named room-wall groups as cutaway walls. A broad
+  // /wall/ match incorrectly classified assemblies such as "TV Wall Mount"
+  // and CAD parts such as "Wall PL SUB_2.stp" as room walls, hiding the TV.
+  const isRoomWallGroup = (rawName: string) => {
+    const name = rawName.trim().replace(/[\s.-]+/g, '_').replace(/_+/g, '_').toUpperCase()
+    return /^(?:WALL|WALLS|MUR|PARTITION)(?:_(?:FRONT|BACK|LEFT|RIGHT))?$/.test(name)
+  }
+  const wallNodes = all.filter(node => isRoomWallGroup(node.name || ''))
   const topWallNodes = wallNodes.filter(node => {
     let parent = node.parent
     while (parent) {
@@ -320,8 +334,11 @@ function EditorApp() {
   const [globalMaterialColor, setGlobalMaterialColor] = useState('#ffffff')
   const [globalRoughness, setGlobalRoughness] = useState(0.62)
   const [globalMetallic, setGlobalMetallic] = useState(0.12)
+  const [globalTextureMaterialName, setGlobalTextureMaterialName] = useState('')
   const [activePreset, setActivePreset] = useState('original')
   const originalMaterialsRef = useRef<Map<number, Material | null>>(new Map())
+  // Immutable GLB material names, captured before any global/per-layer material cloning.
+  const originalMaterialNamesRef = useRef<Map<number, string>>(new Map())
   const floorRef = useRef<{ mesh: Mesh; material: StandardMaterial; textureUrl?: string } | null>(null)
   const [floorEnabled, setFloorEnabled] = useState(true)
   const [floorColor, setFloorColor] = useState('#b8aa94')
@@ -583,6 +600,22 @@ function EditorApp() {
     modelRef.current?.roots.forEach(root => walk(root, 0, null))
     setItems(output)
   }
+  // Keep the texture target dropdown in sync with the layer the user focuses.
+  // The dropdown value is the normalized original GLB material name, matching
+  // the immutable names captured at import time (not the current cloned material).
+  const syncTextureMaterialFromLayer = (id: number | null) => {
+    const ed = editorRef.current
+    const node = id == null ? null : ed?.nodes.get(id)
+    const mesh = node ? findMeshes(node).find(candidate => candidate.material) : null
+    if (!mesh) {
+      setGlobalTextureMaterialName('')
+      return
+    }
+    const originalName = originalMaterialNamesRef.current.get(mesh.uniqueId)
+      ?? (originalMaterialsRef.current.get(mesh.uniqueId)?.name ?? '').trim().toLocaleLowerCase()
+    setGlobalTextureMaterialName(originalName)
+  }
+
   const select = (id: number | null, additive = false) => {
     const targetIds = id == null ? [] : [id]
     const current = highlightedIdsRef.current
@@ -593,6 +626,7 @@ function EditorApp() {
     setHighlightedIds(next)
     const primary = id != null && next.has(id) ? id : (next.values().next().value ?? null)
     setSelected(primary)
+    syncTextureMaterialFromLayer(primary)
     const ed = editorRef.current
     if (!ed) return
     ed.highlight.removeAllMeshes()
@@ -611,6 +645,7 @@ function EditorApp() {
   }
   const focusLayer = (id: number | null) => {
     setSelected(id)
+    syncTextureMaterialFromLayer(id)
     const nextHighlight = id == null ? new Set<number>() : new Set([id])
     highlightedIdsRef.current = nextHighlight
     setHighlightedIds(nextHighlight)
@@ -649,6 +684,7 @@ function EditorApp() {
     highlightedIdsRef.current = next
     setHighlightedIds(next)
     setSelected(parent.uniqueId)
+    syncTextureMaterialFromLayer(parent.uniqueId)
     ed.highlight.removeAllMeshes()
     for (const id of next) {
       const node = ed.nodes.get(id)
@@ -804,6 +840,9 @@ function EditorApp() {
     setBusy(true); setStatus('Loading model…')
     const url = URL.createObjectURL(file)
     try {
+      // The supplied CAD GLB uses KHR_draco_mesh_compression on every mesh.
+      // Wait for Babylon's decoder before starting the glTF import.
+      await ensureDracoDecoderReady()
       const result = await SceneLoader.ImportMeshAsync('', '', url, ed.scene, undefined, '.glb')
       modelRef.current?.roots.forEach(root => root.dispose(false, true))
       if (floorRef.current) { floorRef.current.material.diffuseTexture?.dispose(); floorRef.current.mesh.dispose(); floorRef.current.material.dispose(); if (floorRef.current.textureUrl) URL.revokeObjectURL(floorRef.current.textureUrl); floorRef.current = null }
@@ -811,6 +850,14 @@ function EditorApp() {
       const ids = new Set(imported.map(n => n.uniqueId))
       const roots = imported.filter(n => !n.parent || !ids.has(n.parent.uniqueId))
       modelRef.current = { roots, fileName: file.name, hiddenIds: new Set(), deletedIds: new Set(), generatedIds: new Set(), activeGeneratedIds: new Set() }
+      // Keep each imported mesh's original material as its stable identity. Editing
+      // operations clone materials, so the live material name/reference can change.
+      originalMaterialsRef.current.clear()
+      originalMaterialNamesRef.current.clear()
+      for (const root of roots) for (const mesh of findMeshes(root)) {
+        originalMaterialsRef.current.set(mesh.uniqueId, mesh.material)
+        originalMaterialNamesRef.current.set(mesh.uniqueId, (mesh.material?.name ?? '').trim().toLocaleLowerCase())
+      }
       undoStackRef.current = []; redoStackRef.current = []; syncHistoryCounts()
       selectedIdsRef.current = new Set()
       setSelectedIds(new Set())
@@ -1080,6 +1127,8 @@ function EditorApp() {
     const ed = editorRef.current
     const template = getAvailableModelMaterials().find(material => String(material.uniqueId) === replacementMaterialId)
     if (!ed || !template) return
+    // Capture the pre-edit state so the entire bulk material replacement can be undone.
+    pushHistory()
     let changed = 0
     const visited = new Set<number>()
     for (const id of materialDialogLayerIds) {
@@ -1091,15 +1140,19 @@ function EditorApp() {
         const previous = mesh.material
         const replacement = template.clone(`${template.name || 'material'}_layer_${mesh.uniqueId}`)
         if (!replacement) continue
-        // Keep each mesh's own surface values; only swap the material appearance/maps.
+        // Keep each mesh's own surface response; only swap the appearance and texture maps.
+        // This is deliberately copied per mesh (not from the selected source material).
         replacement.alpha = previous.alpha
         if (replacement instanceof PBRMaterial && previous instanceof PBRMaterial) {
           replacement.roughness = previous.roughness
           replacement.metallic = previous.metallic
           replacement.metallicF0Factor = previous.metallicF0Factor
           replacement.alpha = previous.alpha
+          replacement.transparencyMode = previous.transparencyMode
         } else if (replacement instanceof StandardMaterial && previous instanceof StandardMaterial) {
           replacement.alpha = previous.alpha
+          replacement.specularPower = previous.specularPower
+          replacement.specularColor.copyFrom(previous.specularColor)
         }
         mesh.material = replacement
         changed++
@@ -1111,18 +1164,48 @@ function EditorApp() {
   }
   const selectAllLayersWithSelectedMaterial = () => {
     const ed = editorRef.current
-    if (!ed || selected == null) return
+    const model = modelRef.current
+    if (!ed || !model || selected == null) return
+
     const selectedNode = ed.nodes.get(selected)
-    const selectedMaterial = selectedNode ? findMeshes(selectedNode).find(mesh => mesh.material)?.material : null
-    if (!selectedMaterial) { setStatus('The selected layer has no material.'); return }
-    const materialKey = selectedMaterial.name
+    const selectedMesh = selectedNode ? findMeshes(selectedNode).find(mesh => mesh.material) : null
+    if (!selectedMesh?.material) {
+      setStatus('Select a layer that has a material first.')
+      return
+    }
+
+    // Use the material name captured directly from the imported GLB. This name
+    // remains stable when global color edits, presets, or individual edits clone
+    // the live Babylon material into separate instances.
+    const sourceOriginal = originalMaterialsRef.current.get(selectedMesh.uniqueId)
+    const materialName = originalMaterialNamesRef.current.get(selectedMesh.uniqueId)
+      ?? (sourceOriginal?.name ?? selectedMesh.material.name).trim().toLocaleLowerCase()
+
+    const matchingMeshIds = new Set<number>()
+    for (const root of model.roots) {
+      for (const mesh of findMeshes(root)) {
+        if (!mesh.material) continue
+        const originalName = originalMaterialNamesRef.current.get(mesh.uniqueId)
+          ?? (originalMaterialsRef.current.get(mesh.uniqueId)?.name ?? mesh.material.name).trim().toLocaleLowerCase()
+        if (materialName && originalName === materialName) matchingMeshIds.add(mesh.uniqueId)
+      }
+    }
+
+    // Resolve matching meshes back to every corresponding layer in the sidebar.
+    // Checking the full descendant tree includes nested GLB transform nodes.
     const ids = items.filter(item => {
       const node = ed.nodes.get(item.id)
-      return !!node && findMeshes(node).some(mesh => mesh.material && (mesh.material === selectedMaterial || mesh.material.name === materialKey))
+      return !!node && findMeshes(node).some(mesh => matchingMeshIds.has(mesh.uniqueId))
     }).map(item => item.id)
+
+    if (!ids.length) {
+      setStatus(`No other layers found for material “${sourceOriginal?.name ?? selectedMesh.material.name}”.`)
+      return
+    }
+
     selectedIdsRef.current = new Set(ids)
     setSelectedIds(new Set(ids))
-    setStatus(`Selected ${ids.length} layers using material “${materialKey || 'unnamed'}”`)
+    setStatus(`Found ${matchingMeshIds.size} meshes across ${ids.length} layers using “${sourceOriginal?.name ?? selectedMesh.material.name}”. Choose a replacement material.`)
     openMaterialReplacement(ids)
   }
 
@@ -1263,6 +1346,72 @@ function EditorApp() {
       else if (mat instanceof StandardMaterial) { mat.diffuseTexture = tex; mat.diffuseColor = Color3.White() }
     }
     setColor('#ffffff'); setStatus(`Texture applied: ${file.name}`)
+  }
+
+  // Show the original GLB material names captured when the model was imported.
+  const getAvailableOriginalMaterialNames = () => {
+    const names = new Map<string, string>()
+    for (const original of originalMaterialsRef.current.values()) {
+      if (!original?.name) continue
+      const displayName = original.name.trim()
+      const key = displayName.toLocaleLowerCase()
+      if (key && !names.has(key)) names.set(key, displayName)
+    }
+    return [...names.entries()].sort((a, b) => a[1].localeCompare(b[1]))
+  }
+
+  // Apply the uploaded texture ONLY to meshes with the selected original GLB
+  // material name. This remains stable after colors/materials are edited.
+  const updateGlobalTexture = (file: File) => {
+    const ed = editorRef.current
+    const model = modelRef.current
+    const targetName = globalTextureMaterialName.trim().toLocaleLowerCase()
+    if (!ed || !model) { setStatus('Upload a GLB model before applying a texture.'); return }
+    if (!targetName) { setStatus('Choose a material name in Appearance before uploading a texture.'); return }
+
+    const url = URL.createObjectURL(file)
+    const texture = new Texture(
+      url, ed.scene, false, false, Texture.TRILINEAR_SAMPLINGMODE,
+      () => URL.revokeObjectURL(url),
+      () => { URL.revokeObjectURL(url); setStatus(`Could not load texture: ${file.name}`) }
+    )
+    texture.anisotropicFilteringLevel = 8
+
+    const matchingMeshes = new Map<number, AbstractMesh>()
+    for (const root of model.roots) {
+      for (const mesh of findMeshes(root)) {
+        const originalName = originalMaterialNamesRef.current.get(mesh.uniqueId)
+          ?? (originalMaterialsRef.current.get(mesh.uniqueId)?.name ?? '').trim().toLocaleLowerCase()
+        if (originalName === targetName && mesh.material) matchingMeshes.set(mesh.uniqueId, mesh)
+      }
+    }
+
+    let changed = 0
+    let unsupported = 0
+    for (const mesh of matchingMeshes.values()) {
+      const material = cloneMaterial(mesh)
+      if (material instanceof PBRMaterial) {
+        material.albedoTexture = texture
+        material.albedoColor = Color3.White()
+        changed++
+      } else if (material instanceof StandardMaterial) {
+        material.diffuseTexture = texture
+        material.diffuseColor = Color3.White()
+        changed++
+      } else {
+        unsupported++
+      }
+    }
+
+    if (changed === 0) {
+      texture.dispose()
+      setStatus(`No supported meshes found for material “${globalTextureMaterialName}”.`)
+      return
+    }
+    setGlobalMaterialColor('#ffffff')
+    setActivePreset('custom')
+    setStatus(`Texture applied to ${changed} mesh${changed === 1 ? '' : 'es'} using material “${globalTextureMaterialName}”${unsupported ? ` (${unsupported} unsupported)` : ''}: ${file.name}`)
+    refresh()
   }
   const exportSceneBlob = async (name: string): Promise<Blob> => {
     const ed = editorRef.current
@@ -1595,7 +1744,7 @@ function EditorApp() {
       <section className="viewport"><canvas ref={canvasRef}/>{!filename && <iframe className="brandExperienceFrame" src="/brand-experience.html" title="Interactive Mobica 3D brand experience" />}{filename && <div className="viewportBadge">BABYLON.JS · PBR RENDERER</div>}{(filename || busy) && <div className="status">{busy ? 'Working… ' : ''}{status}</div>}</section>
       <aside className="inspector"><div className="panelTitle"><Paintbrush size={16}/> Inspector</div>{selected != null && chosen() ? <><div className="selectedLabel">{selectedIds.size > 1 ? `${selectedIds.size} layers selected · editing primary: ${chosen()?.name}` : chosen()?.name}</div><div className="actions"><button className="btn" onClick={() => toggleSelectedVisibility(false)}><EyeOff size={15}/> Hide selected</button><button className="btn" onClick={() => toggleSelectedVisibility(true)}><Eye size={15}/> Show selected</button><button className="btn" onClick={selectAllLayersWithSelectedMaterial}><Layers size={15}/> Edit same material</button><button className="btn danger" onClick={remove}><Trash2 size={15}/> Delete</button></div>
       <div className="editorSection"><div className="editorSectionTitle">Material</div><label className="field">Base color<input type="color" value={color} onChange={e => updateColor(e.target.value)}/></label><label className="field">Roughness <span>{roughness.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={roughness} onChange={e => updateRoughness(Number(e.target.value))}/></label><label className="field">Metallic <span>{metallic.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={metallic} onChange={e => updateMetallic(Number(e.target.value))}/></label><label className="field">Opacity <span>{Math.round(opacity * 100)}%</span><input type="range" min="0.1" max="1" step="0.01" value={opacity} onChange={e => updateOpacity(Number(e.target.value))}/></label><label className="btn full"><Upload size={15}/> Replace base-color texture<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateTexture(f); e.target.value = '' }}/></label><p className="hint">Texture placement uses the selected mesh's original UV coordinates.</p></div><div className="editorSection"><div className="editorSectionTitle"><Scissors size={14}/> Interactive mesh cut</div><p className="hint">Select the combined wall mesh, start drawing, then drag a line across the model from one edge to the opposite edge. The line defines the cutting plane from your current camera view.</p>{!cutDrawMode ? <button className="btn full" onClick={startDrawCut} disabled={!chosen()}><Scissors size={14}/> Draw cut on model</button> : <><div className="cutModeNotice">Cut mode active — drag across the selected mesh</div><button className="btn full" onClick={cancelDrawCut}><X size={14}/> Cancel cut</button></>}<p className="hint">Repeat on each new piece to separate all four walls. The cut creates two independently selectable mesh surfaces; it does not add closed caps.</p></div></> : <p className="hint">Select a layer or click any visible part of the model.</p>}
-      <div className="separator"/><div className="panelTitle">Floor layer</div><p className="hint">Add a separate floor beneath the model. It stays independent from your GLB layers and materials.</p><label className="field"><span><input type="checkbox" checked={floorEnabled} onChange={e => updateFloor({ enabled: e.target.checked })}/> Show floor</span></label><label className="field">Floor color<input aria-label="Floor color" type="color" value={floorColor} onChange={e => updateFloor({ color: e.target.value })}/></label><label className="field">Floor size <span>{floorSize.toFixed(1)}×</span><input aria-label="Floor size" type="range" min="1" max="8" step="0.25" value={floorSize} onChange={e => updateFloor({ size: Number(e.target.value) })}/></label><label className="btn full"><Upload size={15}/> {floorTextureName ? 'Replace floor texture' : 'Add floor texture'}<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateFloor({ textureFile: f }); e.target.value = '' }}/></label>{floorTextureName && <p className="hint">Texture: {floorTextureName}</p>}<button className="btn full" onClick={() => { setFloorColor('#b8aa94'); setFloorSize(2.5); setFloorTextureName(''); const f = floorRef.current; if (f) { f.material.diffuseTexture?.dispose(); f.material.diffuseTexture = null; if (f.textureUrl) URL.revokeObjectURL(f.textureUrl); f.textureUrl = undefined; f.material.diffuseColor = Color3.FromHexString('#b8aa94') } updateFloor({ enabled: true, color: '#b8aa94', size: 2.5 }) }}><RotateCcw size={14}/> Reset floor</button><div className="separator"/><div className="panelTitle">Visual presets</div><p className="hint">Apply a complete look to every material in the loaded model. Original image textures and UVs are preserved.</p><div className="visualPresetGrid">{visualPresets.map(preset => <button key={preset.id} className={`visualPresetButton ${activePreset === preset.id ? 'active' : ''}`} onClick={() => applyVisualPreset(preset)}><span className={`presetSwatch preset-${preset.id}`}/><span>{preset.name}</span></button>)}</div><button className="btn full" onClick={resetVisualPreset}><RotateCcw size={14}/> Restore original materials</button><div className="separator"/><div className="panelTitle">Global material controls</div><label className="field">Color tint<input aria-label="Global material color" type="color" value={globalMaterialColor} onChange={e => { setGlobalMaterialColor(e.target.value); updateGlobalMaterialProperty('color', e.target.value) }}/></label><label className="field">Roughness <span>{globalRoughness.toFixed(2)}</span><input aria-label="Global roughness" type="range" min="0" max="1" step="0.01" value={globalRoughness} onChange={e => { const v = Number(e.target.value); setGlobalRoughness(v); updateGlobalMaterialProperty('roughness', v) }}/></label><label className="field">Metallic <span>{globalMetallic.toFixed(2)}</span><input aria-label="Global metallic" type="range" min="0" max="1" step="0.01" value={globalMetallic} onChange={e => { const v = Number(e.target.value); setGlobalMetallic(v); updateGlobalMaterialProperty('metallic', v) }}/></label><div className="panelTitle">Lighting & quality</div><label className="field">Normal strength <span>{normalStrength.toFixed(2)}</span><input aria-label="Normal strength" type="range" min="0" max="2" step="0.05" value={normalStrength} onChange={e => updateGlobalNormalStrength(Number(e.target.value))}/></label><label className="field">Brightness <span>{exposure.toFixed(2)}×</span><input aria-label="Brightness" type="range" min="0.35" max="1.8" step="0.05" value={exposure} onChange={e => { const n = Number(e.target.value); setExposure(n); if (editorRef.current) editorRef.current.scene.imageProcessingConfiguration.exposure = n }}/></label><label className="field">Environment light <span>{environment.toFixed(2)}</span><input aria-label="Environment light" type="range" min="0" max="1.2" step="0.02" value={environment} onChange={e => { const n = Number(e.target.value); setEnvironment(n); if (editorRef.current) editorRef.current.scene.environmentIntensity = n }}/></label><label className="field">Render quality <span>{quality}%</span><input aria-label="Render quality" type="range" min="25" max="100" step="5" value={quality} onChange={e => updateQuality(Number(e.target.value))}/></label><p className="hint">Higher quality increases internal render resolution and texture filtering. It may use more GPU memory and reduce frame rate on slower devices.</p><button className="btn full" onClick={() => { setExposure(1); setEnvironment(0.32); updateQuality(75); if (editorRef.current) { editorRef.current.scene.imageProcessingConfiguration.exposure = 1; editorRef.current.scene.environmentIntensity = 0.32 } }}><RotateCcw size={14}/> Reset lighting & quality</button><p className="hint">Adjust brightness independently from environment reflections and render quality.</p></aside></main>
+      <div className="separator"/><div className="panelTitle">Floor layer</div><p className="hint">Add a separate floor beneath the model. It stays independent from your GLB layers and materials.</p><label className="field"><span><input type="checkbox" checked={floorEnabled} onChange={e => updateFloor({ enabled: e.target.checked })}/> Show floor</span></label><label className="field">Floor color<input aria-label="Floor color" type="color" value={floorColor} onChange={e => updateFloor({ color: e.target.value })}/></label><label className="field">Floor size <span>{floorSize.toFixed(1)}×</span><input aria-label="Floor size" type="range" min="1" max="8" step="0.25" value={floorSize} onChange={e => updateFloor({ size: Number(e.target.value) })}/></label><label className="btn full"><Upload size={15}/> {floorTextureName ? 'Replace floor texture' : 'Add floor texture'}<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateFloor({ textureFile: f }); e.target.value = '' }}/></label>{floorTextureName && <p className="hint">Texture: {floorTextureName}</p>}<button className="btn full" onClick={() => { setFloorColor('#b8aa94'); setFloorSize(2.5); setFloorTextureName(''); const f = floorRef.current; if (f) { f.material.diffuseTexture?.dispose(); f.material.diffuseTexture = null; if (f.textureUrl) URL.revokeObjectURL(f.textureUrl); f.textureUrl = undefined; f.material.diffuseColor = Color3.FromHexString('#b8aa94') } updateFloor({ enabled: true, color: '#b8aa94', size: 2.5 }) }}><RotateCcw size={14}/> Reset floor</button><div className="separator"/><div className="panelTitle">Visual presets</div><p className="hint">Apply a complete look to every material in the loaded model. Original image textures and UVs are preserved.</p><div className="visualPresetGrid">{visualPresets.map(preset => <button key={preset.id} className={`visualPresetButton ${activePreset === preset.id ? 'active' : ''}`} onClick={() => applyVisualPreset(preset)}><span className={`presetSwatch preset-${preset.id}`}/><span>{preset.name}</span></button>)}</div><button className="btn full" onClick={resetVisualPreset}><RotateCcw size={14}/> Restore original materials</button><div className="separator"/><div className="panelTitle">Global material controls</div><label className="field">Color tint<input aria-label="Global material color" type="color" value={globalMaterialColor} onChange={e => { setGlobalMaterialColor(e.target.value); updateGlobalMaterialProperty('color', e.target.value) }}/></label><label className="field">Roughness <span>{globalRoughness.toFixed(2)}</span><input aria-label="Global roughness" type="range" min="0" max="1" step="0.01" value={globalRoughness} onChange={e => { const v = Number(e.target.value); setGlobalRoughness(v); updateGlobalMaterialProperty('roughness', v) }}/></label><label className="field">Metallic <span>{globalMetallic.toFixed(2)}</span><input aria-label="Global metallic" type="range" min="0" max="1" step="0.01" value={globalMetallic} onChange={e => { const v = Number(e.target.value); setGlobalMetallic(v); updateGlobalMaterialProperty('metallic', v) }}/></label><label className="field">Appearance material name<select aria-label="Material name for global texture" value={globalTextureMaterialName} onChange={e => setGlobalTextureMaterialName(e.target.value)}><option value="">Choose a material name…</option>{getAvailableOriginalMaterialNames().map(([key, displayName]) => <option key={key} value={key}>{displayName}</option>)}</select></label><label className="btn full"><Upload size={15}/> Upload texture for this material<input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={!globalTextureMaterialName} onChange={e => { const f = e.target.files?.[0]; if (f) updateGlobalTexture(f); e.target.value = '' }}/></label><p className="hint">Applies the texture only to meshes using the selected original GLB material name. Other materials remain unchanged. Each matching mesh keeps its UVs, opacity, roughness and metallic values.</p><div className="panelTitle">Lighting & quality</div><label className="field">Normal strength <span>{normalStrength.toFixed(2)}</span><input aria-label="Normal strength" type="range" min="0" max="2" step="0.05" value={normalStrength} onChange={e => updateGlobalNormalStrength(Number(e.target.value))}/></label><label className="field">Brightness <span>{exposure.toFixed(2)}×</span><input aria-label="Brightness" type="range" min="0.35" max="1.8" step="0.05" value={exposure} onChange={e => { const n = Number(e.target.value); setExposure(n); if (editorRef.current) editorRef.current.scene.imageProcessingConfiguration.exposure = n }}/></label><label className="field">Environment light <span>{environment.toFixed(2)}</span><input aria-label="Environment light" type="range" min="0" max="1.2" step="0.02" value={environment} onChange={e => { const n = Number(e.target.value); setEnvironment(n); if (editorRef.current) editorRef.current.scene.environmentIntensity = n }}/></label><label className="field">Render quality <span>{quality}%</span><input aria-label="Render quality" type="range" min="25" max="100" step="5" value={quality} onChange={e => updateQuality(Number(e.target.value))}/></label><p className="hint">Higher quality increases internal render resolution and texture filtering. It may use more GPU memory and reduce frame rate on slower devices.</p><button className="btn full" onClick={() => { setExposure(1); setEnvironment(0.32); updateQuality(75); if (editorRef.current) { editorRef.current.scene.imageProcessingConfiguration.exposure = 1; editorRef.current.scene.environmentIntensity = 0.32 } }}><RotateCcw size={14}/> Reset lighting & quality</button><p className="hint">Adjust brightness independently from environment reflections and render quality.</p></aside></main>
     {materialDialogOpen && <div className="shareOverlay"><div className="shareDialog materialReplaceDialog"><button className="shareClose" onClick={() => setMaterialDialogOpen(false)}>×</button><div className="shareIcon"><Paintbrush size={22}/></div><h2>Replace material</h2><p>Choose a material from this model. The selected layers will use its color and texture maps, while each mesh keeps its own opacity, roughness and metallic values.</p><label className="field">New material<select value={replacementMaterialId} onChange={e => setReplacementMaterialId(e.target.value)}>{getAvailableModelMaterials().map(material => <option key={material.uniqueId} value={String(material.uniqueId)}>{material.name || `Material ${material.uniqueId}`}</option>)}</select></label><div className="shareActions"><button className="btn" onClick={() => setMaterialDialogOpen(false)}>Cancel</button><button className="btn primary" onClick={replaceMaterialsOnLayers} disabled={!replacementMaterialId}>Apply to {materialDialogLayerIds.length} layers</button></div></div></div>}
     {shareUrl && <div className="shareOverlay"><div className="shareDialog"><button className="shareClose" onClick={() => setShareUrl('')}>×</button><div className="shareIcon"><Share2 size={22}/></div><h2>Share model</h2><p>Two versions are included: the full model (with hidden layers restored, but deleted layers removed) and the visible-only model. Editing is disabled.</p><div className="shareUrl">{shareUrl}<button className="iconBtn" title="Copy link" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={16}/></button></div><div className="shareExpiry"><Clock size={15}/> Link expires in <strong>{shareRemaining || '3d 0h 0m 0s'}</strong></div><div className="shareActions"><button className="btn primary" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={15}/> Copy link</button><button className="btn" onClick={() => window.open(shareUrl, '_blank', 'noopener,noreferrer')}><ExternalLink size={15}/> Preview</button></div></div></div>}
 
@@ -1875,6 +2024,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     let disposed = false
 
     const loadVariant = async (url: string) => {
+      await ensureDracoDecoderReady()
       const result = await SceneLoader.ImportMeshAsync('', '', url, scene, undefined, '.glb')
       const imported: Node[] = [...result.transformNodes, ...result.meshes]
       const importedIds = new Set(imported.map(node => node.uniqueId))
