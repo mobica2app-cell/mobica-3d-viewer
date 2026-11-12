@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh, Viewport, ShadowGenerator } from '@babylonjs/core'
+import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh, Viewport, DynamicTexture } from '@babylonjs/core'
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader'
 import '@babylonjs/loaders/glTF'
 import { GLTF2Export } from '@babylonjs/serializers/glTF'
@@ -1347,6 +1347,122 @@ type SharedModelVariant = {
 }
 type SharedModelVariants = { visible: SharedModelVariant; all: SharedModelVariant }
 
+
+type PreviewSurfaceKind = 'fabric' | 'leather' | 'wood' | 'metal' | 'generic'
+
+function getPreviewSurfaceKind(mesh: AbstractMesh): PreviewSurfaceKind {
+  const label = `${mesh.name} ${mesh.material?.name || ''}`.toLowerCase()
+  if (/fabric|cloth|textile|linen|velvet|cotton|upholstery|cushion|pillow|weave/.test(label)) return 'fabric'
+  if (/leather|skin|suede|nubuck/.test(label)) return 'leather'
+  if (/wood|oak|walnut|ash|veneer|timber|grain|مwood/.test(label)) return 'wood'
+  if (/metal|steel|chrome|alum|brass|iron|gold/.test(label)) return 'metal'
+  return 'generic'
+}
+
+// Builds a subtle tangent-space normal map from procedural height detail.
+// This adds real light-response variation without replacing the model's albedo maps.
+function createPreviewDetailNormal(scene: Scene, kind: PreviewSurfaceKind): DynamicTexture {
+  const resolution = 256
+  const texture = new DynamicTexture(`preview-detail-${kind}`, { width: resolution, height: resolution }, scene, false, Texture.BILINEAR_SAMPLINGMODE)
+  const ctx = texture.getContext()
+  const image = ctx.createImageData(resolution, resolution)
+  const heights = new Float32Array(resolution * resolution)
+  const fract = (n: number) => n - Math.floor(n)
+  const hash = (x: number, y: number) => fract(Math.sin(x * 127.1 + y * 311.7) * 43758.5453)
+  for (let y = 0; y < resolution; y++) {
+    for (let x = 0; x < resolution; x++) {
+      const u = x / resolution
+      const v = y / resolution
+      const noise = hash(x, y) - 0.5
+      let h = noise * 0.08
+      if (kind === 'fabric') {
+        const warp = Math.pow(Math.max(0, Math.cos(x * Math.PI / 4)), 8)
+        const weft = Math.pow(Math.max(0, Math.cos(y * Math.PI / 4)), 8)
+        h += (warp + weft) * 0.22 + Math.sin(x * 0.37 + y * 0.05) * 0.018
+      } else if (kind === 'leather') {
+        const pore = Math.pow(Math.max(0, Math.sin(x * 0.71 + hash(x >> 2, y >> 2) * 5) * Math.sin(y * 0.67 + hash(y >> 2, x >> 2) * 5)), 10)
+        h += pore * 0.32 + noise * 0.06
+      } else if (kind === 'wood') {
+        const grain = Math.sin(y * 0.105 + Math.sin(x * 0.027) * 3.2 + Math.sin(x * 0.009 + y * 0.02) * 1.3)
+        h += grain * 0.12 + Math.sin(y * 0.43 + Math.sin(x * 0.06) * 2) * 0.025 + noise * 0.025
+      } else if (kind === 'metal') {
+        h += Math.sin(x * 0.22 + y * 0.035) * 0.035 + noise * 0.025
+      } else {
+        h += Math.sin(x * 0.19) * Math.sin(y * 0.17) * 0.035
+      }
+      heights[y * resolution + x] = h
+    }
+  }
+  const strength = kind === 'fabric' ? 1.25 : kind === 'leather' ? 0.95 : kind === 'wood' ? 0.72 : kind === 'metal' ? 0.32 : 0.42
+  for (let y = 0; y < resolution; y++) {
+    for (let x = 0; x < resolution; x++) {
+      const i = y * resolution + x
+      const left = heights[y * resolution + ((x + resolution - 1) % resolution)]
+      const right = heights[y * resolution + ((x + 1) % resolution)]
+      const up = heights[((y + resolution - 1) % resolution) * resolution + x]
+      const down = heights[((y + 1) % resolution) * resolution + x]
+      let nx = -(right - left) * strength * 3
+      let ny = -(down - up) * strength * 3
+      let nz = 1
+      const inv = 1 / Math.sqrt(nx * nx + ny * ny + nz * nz)
+      nx *= inv; ny *= inv; nz *= inv
+      const p = i * 4
+      image.data[p] = Math.round((nx * 0.5 + 0.5) * 255)
+      image.data[p + 1] = Math.round((ny * 0.5 + 0.5) * 255)
+      image.data[p + 2] = Math.round((nz * 0.5 + 0.5) * 255)
+      image.data[p + 3] = 255
+    }
+  }
+  ctx.putImageData(image, 0, 0)
+  texture.update(false)
+  texture.wrapU = Texture.WRAP_ADDRESSMODE
+  texture.wrapV = Texture.WRAP_ADDRESSMODE
+  texture.gammaSpace = false
+  texture.level = kind === 'fabric' ? 0.42 : kind === 'leather' ? 0.34 : kind === 'wood' ? 0.26 : 0.18
+  texture.uScale = kind === 'wood' ? 1.4 : 2.5
+  texture.vScale = kind === 'wood' ? 3.5 : 2.5
+  return texture
+}
+
+function enhanceSharedPreviewMaterials(roots: Node[], scene: Scene) {
+  const detailTextures = new Map<PreviewSurfaceKind, DynamicTexture>()
+  const visitedMaterials = new Map<Material, Material>()
+  for (const root of roots) {
+    const meshes = root instanceof AbstractMesh ? [root, ...root.getChildMeshes(false)] : root.getChildMeshes(false)
+    for (const mesh of meshes) {
+      const original = mesh.material
+      if (!original) continue
+      let enhanced = visitedMaterials.get(original)
+      if (!enhanced) {
+        enhanced = original.clone(`${original.name || 'material'}-preview-realistic`) || original
+        visitedMaterials.set(original, enhanced)
+        if (enhanced instanceof PBRMaterial) {
+          if (!enhanced.bumpTexture) {
+            const kind = getPreviewSurfaceKind(mesh)
+            let detail = detailTextures.get(kind)
+            if (!detail) {
+              detail = createPreviewDetailNormal(scene, kind)
+              detailTextures.set(kind, detail)
+            }
+            enhanced.bumpTexture = detail
+            enhanced.bumpTexture.level = detail.level
+          }
+          // Keep existing roughness values; only add a subtle surface normal response.
+        } else if (enhanced instanceof StandardMaterial && !enhanced.bumpTexture) {
+          const kind = getPreviewSurfaceKind(mesh)
+          let detail = detailTextures.get(kind)
+          if (!detail) {
+            detail = createPreviewDetailNormal(scene, kind)
+            detailTextures.set(kind, detail)
+          }
+          enhanced.bumpTexture = detail
+        }
+      }
+      mesh.material = enhanced
+    }
+  }
+}
+
 function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [info, setInfo] = useState<ShareInfo | null>(null)
@@ -1409,11 +1525,9 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     const scene = new Scene(engine)
     scene.clearColor = new Color4(1, 1, 1, 1)
     scene.useRightHandedSystem = true
-    // Shared preview uses a more photographic image pipeline than the editor.
-    // Keep imported PBR textures/material values intact; improve only rendering.
-    scene.imageProcessingConfiguration.toneMappingEnabled = true
-    scene.imageProcessingConfiguration.exposure = 1.08
-    scene.imageProcessingConfiguration.contrast = 1.12
+    scene.imageProcessingConfiguration.toneMappingEnabled = false
+    scene.imageProcessingConfiguration.exposure = 1
+    scene.imageProcessingConfiguration.contrast = 1
     const camera = new ArcRotateCamera('shared-camera', -Math.PI / 3, Math.PI / 2.7, 8, Vector3.Zero(), scene)
     camera.attachControl(canvas, false)
     configureCameraSensitivity(camera, isTouchViewport())
@@ -1428,20 +1542,12 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     overviewCamera.lowerRadiusLimit = 0.08
     overviewCamera.minZ = 0.01
     overviewCameraRef.current = overviewCamera
-    const hemi = new HemisphericLight('preview-ambient-fill', new Vector3(0, 1, 0), scene)
-    hemi.intensity = 0.62
-    hemi.groundColor = new Color3(0.72, 0.76, 0.82)
-    const sun = new DirectionalLight('preview-soft-key', new Vector3(-0.6, -1.5, -0.7), scene)
-    sun.intensity = 1.15
-    sun.position = new Vector3(8, 12, 8)
-    // Soft real-time shadows add depth to seams, cushions and overlapping parts.
-    const shadowGenerator = new ShadowGenerator(window.innerWidth <= 600 ? 1024 : 2048, sun)
-    shadowGenerator.usePercentageCloserFiltering = true
-    shadowGenerator.filteringQuality = ShadowGenerator.QUALITY_HIGH
-    shadowGenerator.bias = 0.0005
-    shadowGenerator.normalBias = 0.02
+    const hemi = new HemisphericLight('soft-fill', new Vector3(0, 1, 0), scene)
+    hemi.intensity = 0.38
+    const sun = new DirectionalLight('soft-key', new Vector3(-0.6, -1.5, -0.7), scene)
+    sun.intensity = 0.55
     scene.environmentTexture = CubeTexture.CreateFromPrefilteredData('https://assets.babylonjs.com/environments/environmentSpecular.env', scene)
-    scene.environmentIntensity = 0.78
+    scene.environmentIntensity = 0.32
     const highlight = new HighlightLayer('shared-selection', scene)
     const sharedEd: Editor = {
       scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [],
@@ -1517,12 +1623,6 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
         }
       }
       const geometry = result.meshes.filter(mesh => mesh.getTotalVertices() > 0)
-      // Preserve the GLB's authored materials and texture maps. Add the imported
-      // geometry to the preview shadow pass instead of inventing replacement materials.
-      for (const mesh of geometry) {
-        mesh.receiveShadows = true
-        shadowGenerator.addShadowCaster(mesh, true)
-      }
       let min = new Vector3(Infinity, Infinity, Infinity)
       let max = new Vector3(-Infinity, -Infinity, -Infinity)
       for (const mesh of geometry) {
@@ -1560,6 +1660,10 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
           loadVariant(info.fullUrl)
         ])
         if (disposed) return
+        // Add preview-only procedural micro-normal detail (fabric weave, leather grain,
+        // wood grain and subtle metal texture). Original base-color maps stay intact.
+        enhanceSharedPreviewMaterials(visible.roots, scene)
+        enhanceSharedPreviewMaterials(all.roots, scene)
         sharedVariantsRef.current = { visible, all }
         // A stale Cloudflare/Vite HTML cache can reference a hashed Babylon
         // loader chunk that no longer exists after deployment. Clear the
