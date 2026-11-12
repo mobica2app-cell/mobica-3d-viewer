@@ -780,7 +780,8 @@ function EditorApp() {
       setFloorTextureName(changes.textureFile.name)
     }
     if (changes.size !== undefined && floor.material.diffuseTexture) {
-      floor.material.diffuseTexture.uScale = size; floor.material.diffuseTexture.vScale = size
+      const floorTexture = floor.material.diffuseTexture as Texture
+      floorTexture.uScale = size; floorTexture.vScale = size
     }
     const meshes = model.roots.flatMap(root => findMeshes(root)).filter(mesh => mesh.getTotalVertices() > 0)
     if (meshes.length) {
@@ -1067,7 +1068,8 @@ function EditorApp() {
     const ed = editorRef.current
     if (!ed || !ids.length) return
     const options = getAvailableModelMaterials()
-    const current = currentMaterials[0]
+    const selectedNode = selected == null ? null : ed.nodes.get(selected)
+    const current = selectedNode ? findMeshes(selectedNode).find(mesh => mesh.material)?.material : null
     const defaultTarget = options.find(material => material !== current) || options[0]
     if (!defaultTarget) { setStatus('No materials found in this model.'); return }
     setMaterialDialogLayerIds(ids)
