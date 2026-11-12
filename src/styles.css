@@ -224,3 +224,4 @@
   .desktopHint{display:none}
   .mobileHint{display:inline}
 }
+.visualPresetGrid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:12px 0}.visualPresetButton{display:flex;align-items:center;gap:8px;min-width:0;text-align:left;padding:9px 7px;border-radius:8px;border:1px solid #344252;background:#202b37;color:#dce7f1;font-size:10px;font-weight:650}.visualPresetButton:hover,.visualPresetButton.active{border-color:#11b5a3;background:#173b3a}.presetSwatch{width:25px;height:25px;flex:0 0 25px;border-radius:6px;border:1px solid #ffffff55;background:linear-gradient(135deg,#eee,#b6a28d)}.preset-warm{background:linear-gradient(135deg,#fff1dc,#9b6847)}.preset-matte{background:linear-gradient(135deg,#f4f0e7,#b5aa98)}.preset-glossy{background:linear-gradient(135deg,#fff,#7e8b98 48%,#e6e8eb)}.preset-natural{background:repeating-linear-gradient(90deg,#d5ad7c 0 3px,#a8794e 3px 5px,#e3c59d 5px 8px)}

@@ -12,6 +12,14 @@ type CutawayMaterial = { mesh: AbstractMesh; original: Material; faded: Material
 const cutawayBaseVisibility = new WeakMap<AbstractMesh, boolean>()
 type Editor = { scene: Scene; camera: ArcRotateCamera; highlight: HighlightLayer; nodes: Map<number, Node>; rootNodes: Node[]; cutawayWalls: CutawayWall[]; cutawayMaterials: Map<number, CutawayMaterial>; cutawayEnabled: boolean; activeCutawaySignature: string; cutawayCenter: Vector3; cutawaySize: Vector3 }
 type ModelSnapshot = { hiddenIds: Set<number>; deletedIds: Set<number>; activeGeneratedIds: Set<number> }
+type VisualPreset = { id: string; name: string; color: string; roughness: number; normal: number; metallic: number; environment: number; brightness: number; hemi: number; sun: number }
+const visualPresets: VisualPreset[] = [
+  { id: 'studio', name: 'Realistic Studio', color: '#ffffff', roughness: 0.62, normal: 0.75, metallic: 0.12, environment: 0.55, brightness: 1.08, hemi: 0.48, sun: 0.62 },
+  { id: 'warm', name: 'Warm Luxury', color: '#fff5e9', roughness: 0.48, normal: 0.85, metallic: 0.18, environment: 0.68, brightness: 1.04, hemi: 0.52, sun: 0.48 },
+  { id: 'matte', name: 'Natural Matte', color: '#ffffff', roughness: 0.82, normal: 0.9, metallic: 0.04, environment: 0.38, brightness: 1.12, hemi: 0.55, sun: 0.42 },
+  { id: 'glossy', name: 'Glossy Luxury', color: '#ffffff', roughness: 0.2, normal: 0.45, metallic: 0.28, environment: 0.85, brightness: 1.05, hemi: 0.42, sun: 0.72 },
+  { id: 'natural', name: 'Natural Wood', color: '#fffaf2', roughness: 0.68, normal: 1, metallic: 0.02, environment: 0.5, brightness: 1.08, hemi: 0.5, sun: 0.5 },
+]
 
 
 // Keep desktop mouse orbit/pan unchanged, make desktop wheel/trackpad zoom more
@@ -270,6 +278,12 @@ function EditorApp() {
   const [exposure, setExposure] = useState(1)
   const [environment, setEnvironment] = useState(0.32)
   const [quality, setQuality] = useState(75)
+  const [normalStrength, setNormalStrength] = useState(0.75)
+  const [globalMaterialColor, setGlobalMaterialColor] = useState('#ffffff')
+  const [globalRoughness, setGlobalRoughness] = useState(0.62)
+  const [globalMetallic, setGlobalMetallic] = useState(0.12)
+  const [activePreset, setActivePreset] = useState('original')
+  const originalMaterialsRef = useRef<Map<number, Material | null>>(new Map())
   const [autoCutaway, setAutoCutaway] = useState(true)
   useEffect(() => {
     const ed = editorRef.current
@@ -988,6 +1002,87 @@ function EditorApp() {
       if (mat instanceof PBRMaterial) { const clone = cloneMaterial(mesh); if (clone instanceof PBRMaterial) clone.roughness = value }
     }
   }
+  const applyVisualPreset = (preset: VisualPreset) => {
+    const ed = editorRef.current
+    const model = modelRef.current
+    if (!ed || !model) { setStatus('Upload a GLB model first.'); return }
+    for (const root of model.roots) {
+      for (const mesh of findMeshes(root)) {
+        if (!originalMaterialsRef.current.has(mesh.uniqueId)) originalMaterialsRef.current.set(mesh.uniqueId, mesh.material)
+        const original = originalMaterialsRef.current.get(mesh.uniqueId)
+        if (!original) continue
+        const material = original.clone(`${original.name}_preset_${preset.id}_${mesh.uniqueId}`)
+        if (!material) continue
+        if (material instanceof PBRMaterial) {
+          material.albedoColor = Color3.FromHexString(preset.color)
+          material.roughness = preset.roughness
+          material.metallic = preset.metallic
+          if (material.bumpTexture) material.bumpTexture.level = preset.normal
+          if (material.normalTexture) material.normalTexture.level = preset.normal
+        } else if (material instanceof StandardMaterial) {
+          material.diffuseColor = Color3.FromHexString(preset.color)
+          if (material.bumpTexture) material.bumpTexture.level = preset.normal
+        }
+        mesh.material = material
+      }
+    }
+    setNormalStrength(preset.normal)
+    setGlobalMaterialColor(preset.color); setGlobalRoughness(preset.roughness); setGlobalMetallic(preset.metallic)
+    setExposure(preset.brightness)
+    setEnvironment(preset.environment)
+    ed.scene.imageProcessingConfiguration.exposure = preset.brightness
+    ed.scene.environmentIntensity = preset.environment
+    const hemi = ed.scene.getLightByName('soft-fill')
+    const sun = ed.scene.getLightByName('soft-key')
+    if (hemi) hemi.intensity = preset.hemi
+    if (sun) sun.intensity = preset.sun
+    setActivePreset(preset.id)
+    setStatus(`${preset.name} applied to all model materials.`)
+  }
+
+  const resetVisualPreset = () => {
+    const ed = editorRef.current
+    const model = modelRef.current
+    if (!ed || !model) return
+    for (const root of model.roots) for (const mesh of findMeshes(root)) {
+      const original = originalMaterialsRef.current.get(mesh.uniqueId)
+      if (original !== undefined) mesh.material = original
+    }
+    ed.scene.imageProcessingConfiguration.exposure = 1
+    ed.scene.environmentIntensity = 0.32
+    const hemi = ed.scene.getLightByName('soft-fill'); if (hemi) hemi.intensity = 0.38
+    const sun = ed.scene.getLightByName('soft-key'); if (sun) sun.intensity = 0.55
+    setExposure(1); setEnvironment(0.32); setNormalStrength(0.75); setGlobalMaterialColor('#ffffff'); setGlobalRoughness(0.75); setGlobalMetallic(0); setActivePreset('original')
+    setStatus('Original GLB materials and lighting restored.')
+  }
+
+  const updateGlobalMaterialProperty = (property: 'color' | 'roughness' | 'metallic', value: string | number) => {
+    const model = modelRef.current
+    if (!model) return
+    for (const root of model.roots) for (const mesh of findMeshes(root)) {
+      const mat = cloneMaterial(mesh)
+      if (mat instanceof PBRMaterial) {
+        if (property === 'color') mat.albedoColor = Color3.FromHexString(String(value))
+        if (property === 'roughness') mat.roughness = Number(value)
+        if (property === 'metallic') mat.metallic = Number(value)
+      } else if (mat instanceof StandardMaterial && property === 'color') mat.diffuseColor = Color3.FromHexString(String(value))
+    }
+    setActivePreset('custom')
+  }
+
+  const updateGlobalNormalStrength = (value: number) => {
+    setNormalStrength(value)
+    const model = modelRef.current
+    if (!model) return
+    for (const root of model.roots) for (const mesh of findMeshes(root)) {
+      const material = mesh.material
+      if (material instanceof PBRMaterial) {
+        if (material.bumpTexture) material.bumpTexture.level = value
+        if (material.normalTexture) material.normalTexture.level = value
+      } else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = value
+    }
+  }
+
   const updateTexture = (file: File) => {
     const ed = editorRef.current, node = chosen(); if (!ed || !node) return
     const url = URL.createObjectURL(file)
@@ -1330,7 +1425,7 @@ function EditorApp() {
       <section className="viewport"><canvas ref={canvasRef}/>{!filename && <iframe className="brandExperienceFrame" src="/brand-experience.html" title="Interactive Mobica 3D brand experience" />}{filename && <div className="viewportBadge">BABYLON.JS · PBR RENDERER</div>}{(filename || busy) && <div className="status">{busy ? 'Working… ' : ''}{status}</div>}</section>
       <aside className="inspector"><div className="panelTitle"><Paintbrush size={16}/> Inspector</div>{selected != null && chosen() ? <><div className="selectedLabel">{selectedIds.size > 1 ? `${selectedIds.size} layers selected · editing primary: ${chosen()?.name}` : chosen()?.name}</div><div className="actions"><button className="btn" onClick={() => toggleSelectedVisibility(false)}><EyeOff size={15}/> Hide selected</button><button className="btn" onClick={() => toggleSelectedVisibility(true)}><Eye size={15}/> Show selected</button><button className="btn danger" onClick={remove}><Trash2 size={15}/> Delete</button></div>
       <div className="editorSection"><div className="editorSectionTitle">Material</div><label className="field">Base color<input type="color" value={color} onChange={e => updateColor(e.target.value)}/></label><label className="field">Roughness <span>{roughness.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={roughness} onChange={e => updateRoughness(Number(e.target.value))}/></label><label className="field">Metallic <span>{metallic.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={metallic} onChange={e => updateMetallic(Number(e.target.value))}/></label><label className="field">Opacity <span>{Math.round(opacity * 100)}%</span><input type="range" min="0.1" max="1" step="0.01" value={opacity} onChange={e => updateOpacity(Number(e.target.value))}/></label><label className="btn full"><Upload size={15}/> Replace base-color texture<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateTexture(f); e.target.value = '' }}/></label><p className="hint">Texture placement uses the selected mesh's original UV coordinates.</p></div><div className="editorSection"><div className="editorSectionTitle"><Scissors size={14}/> Interactive mesh cut</div><p className="hint">Select the combined wall mesh, start drawing, then drag a line across the model from one edge to the opposite edge. The line defines the cutting plane from your current camera view.</p>{!cutDrawMode ? <button className="btn full" onClick={startDrawCut} disabled={!chosen()}><Scissors size={14}/> Draw cut on model</button> : <><div className="cutModeNotice">Cut mode active — drag across the selected mesh</div><button className="btn full" onClick={cancelDrawCut}><X size={14}/> Cancel cut</button></>}<p className="hint">Repeat on each new piece to separate all four walls. The cut creates two independently selectable mesh surfaces; it does not add closed caps.</p></div></> : <p className="hint">Select a layer or click any visible part of the model.</p>}
-      <div className="separator"/><div className="panelTitle">Lighting & quality</div><label className="field">Brightness <span>{exposure.toFixed(2)}×</span><input aria-label="Brightness" type="range" min="0.35" max="1.8" step="0.05" value={exposure} onChange={e => { const n = Number(e.target.value); setExposure(n); if (editorRef.current) editorRef.current.scene.imageProcessingConfiguration.exposure = n }}/></label><label className="field">Environment light <span>{environment.toFixed(2)}</span><input aria-label="Environment light" type="range" min="0" max="1.2" step="0.02" value={environment} onChange={e => { const n = Number(e.target.value); setEnvironment(n); if (editorRef.current) editorRef.current.scene.environmentIntensity = n }}/></label><label className="field">Render quality <span>{quality}%</span><input aria-label="Render quality" type="range" min="25" max="100" step="5" value={quality} onChange={e => updateQuality(Number(e.target.value))}/></label><p className="hint">Higher quality increases internal render resolution and texture filtering. It may use more GPU memory and reduce frame rate on slower devices.</p><button className="btn full" onClick={() => { setExposure(1); setEnvironment(0.32); updateQuality(75); if (editorRef.current) { editorRef.current.scene.imageProcessingConfiguration.exposure = 1; editorRef.current.scene.environmentIntensity = 0.32 } }}><RotateCcw size={14}/> Reset lighting & quality</button><p className="hint">Adjust brightness independently from environment reflections and render quality.</p></aside></main>
+      <div className="separator"/><div className="panelTitle">Visual presets</div><p className="hint">Apply a complete look to every material in the loaded model. Original image textures and UVs are preserved.</p><div className="visualPresetGrid">{visualPresets.map(preset => <button key={preset.id} className={`visualPresetButton ${activePreset === preset.id ? 'active' : ''}`} onClick={() => applyVisualPreset(preset)}><span className={`presetSwatch preset-${preset.id}`}/><span>{preset.name}</span></button>)}</div><button className="btn full" onClick={resetVisualPreset}><RotateCcw size={14}/> Restore original materials</button><div className="separator"/><div className="panelTitle">Global material controls</div><label className="field">Color tint<input aria-label="Global material color" type="color" value={globalMaterialColor} onChange={e => { setGlobalMaterialColor(e.target.value); updateGlobalMaterialProperty('color', e.target.value) }}/></label><label className="field">Roughness <span>{globalRoughness.toFixed(2)}</span><input aria-label="Global roughness" type="range" min="0" max="1" step="0.01" value={globalRoughness} onChange={e => { const v = Number(e.target.value); setGlobalRoughness(v); updateGlobalMaterialProperty('roughness', v) }}/></label><label className="field">Metallic <span>{globalMetallic.toFixed(2)}</span><input aria-label="Global metallic" type="range" min="0" max="1" step="0.01" value={globalMetallic} onChange={e => { const v = Number(e.target.value); setGlobalMetallic(v); updateGlobalMaterialProperty('metallic', v) }}/></label><div className="panelTitle">Lighting & quality</div><label className="field">Normal strength <span>{normalStrength.toFixed(2)}</span><input aria-label="Normal strength" type="range" min="0" max="2" step="0.05" value={normalStrength} onChange={e => updateGlobalNormalStrength(Number(e.target.value))}/></label><label className="field">Brightness <span>{exposure.toFixed(2)}×</span><input aria-label="Brightness" type="range" min="0.35" max="1.8" step="0.05" value={exposure} onChange={e => { const n = Number(e.target.value); setExposure(n); if (editorRef.current) editorRef.current.scene.imageProcessingConfiguration.exposure = n }}/></label><label className="field">Environment light <span>{environment.toFixed(2)}</span><input aria-label="Environment light" type="range" min="0" max="1.2" step="0.02" value={environment} onChange={e => { const n = Number(e.target.value); setEnvironment(n); if (editorRef.current) editorRef.current.scene.environmentIntensity = n }}/></label><label className="field">Render quality <span>{quality}%</span><input aria-label="Render quality" type="range" min="25" max="100" step="5" value={quality} onChange={e => updateQuality(Number(e.target.value))}/></label><p className="hint">Higher quality increases internal render resolution and texture filtering. It may use more GPU memory and reduce frame rate on slower devices.</p><button className="btn full" onClick={() => { setExposure(1); setEnvironment(0.32); updateQuality(75); if (editorRef.current) { editorRef.current.scene.imageProcessingConfiguration.exposure = 1; editorRef.current.scene.environmentIntensity = 0.32 } }}><RotateCcw size={14}/> Reset lighting & quality</button><p className="hint">Adjust brightness independently from environment reflections and render quality.</p></aside></main>
     {shareUrl && <div className="shareOverlay"><div className="shareDialog"><button className="shareClose" onClick={() => setShareUrl('')}>×</button><div className="shareIcon"><Share2 size={22}/></div><h2>Share model</h2><p>Two versions are included: the full model (with hidden layers restored, but deleted layers removed) and the visible-only model. Editing is disabled.</p><div className="shareUrl">{shareUrl}<button className="iconBtn" title="Copy link" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={16}/></button></div><div className="shareExpiry"><Clock size={15}/> Link expires in <strong>{shareRemaining || '3d 0h 0m 0s'}</strong></div><div className="shareActions"><button className="btn primary" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={15}/> Copy link</button><button className="btn" onClick={() => window.open(shareUrl, '_blank', 'noopener,noreferrer')}><ExternalLink size={15}/> Preview</button></div></div></div>}
 
   </div>
