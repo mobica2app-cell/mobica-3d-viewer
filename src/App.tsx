@@ -10,6 +10,16 @@ import './styles.css'
 // Browser-friendly photorealistic rendering baseline. This improves light response,
 // antialiasing, tone mapping and contact shadows without modifying imported materials.
 const sceneShadowGenerators = new WeakMap<Scene, ShadowGenerator>()
+
+// Keep Studio and customer Preview color response identical. ACES tone mapping
+// rolls off bright highlights more naturally while retaining the source GLB albedo.
+function configureRealisticColorRendering(scene: Scene) {
+  const image = scene.imageProcessingConfiguration
+  image.toneMappingEnabled = true
+  image.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES
+  image.exposure = 1
+  image.contrast = 1.08
+}
 function enablePhotorealisticRendering(scene: Scene, camera: ArcRotateCamera) {
   const pipeline = new DefaultRenderingPipeline('mobica-photorealistic-pipeline', true, scene, [camera])
   pipeline.samples = 4
@@ -710,9 +720,7 @@ function EditorApp() {
     const scene = new Scene(engine)
     scene.clearColor = new Color4(1, 1, 1, 1)
     scene.useRightHandedSystem = true
-    scene.imageProcessingConfiguration.toneMappingEnabled = false // preserve base colors without ACES highlight shifts
-    scene.imageProcessingConfiguration.exposure = 1
-    scene.imageProcessingConfiguration.contrast = 1
+    configureRealisticColorRendering(scene)
     const camera = new ArcRotateCamera('camera', -Math.PI / 3, Math.PI / 2.7, 8, Vector3.Zero(), scene)
     camera.attachControl(canvasRef.current, false)
     configureCameraSensitivity(camera, isTouchViewport())
@@ -855,8 +863,14 @@ function EditorApp() {
       originalMaterialsRef.current.clear()
       originalMaterialNamesRef.current.clear()
       for (const root of roots) for (const mesh of findMeshes(root)) {
-        originalMaterialsRef.current.set(mesh.uniqueId, mesh.material)
         originalMaterialNamesRef.current.set(mesh.uniqueId, (mesh.material?.name ?? '').trim().toLocaleLowerCase())
+      }
+      // Use the same subtle fabric/leather/wood/metal surface response as the
+      // customer Preview so Normal Strength and material lighting behave alike.
+      enhanceSharedPreviewMaterials(roots, ed.scene)
+      for (const root of roots) for (const mesh of findMeshes(root)) {
+        // Store the enhanced baseline so Reset keeps the realistic surface detail.
+        originalMaterialsRef.current.set(mesh.uniqueId, mesh.material)
       }
       undoStackRef.current = []; redoStackRef.current = []; syncHistoryCounts()
       selectedIdsRef.current = new Set()
@@ -1948,9 +1962,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     const scene = new Scene(engine)
     scene.clearColor = new Color4(1, 1, 1, 1)
     scene.useRightHandedSystem = true
-    scene.imageProcessingConfiguration.toneMappingEnabled = false
-    scene.imageProcessingConfiguration.exposure = 1
-    scene.imageProcessingConfiguration.contrast = 1
+    configureRealisticColorRendering(scene)
     const camera = new ArcRotateCamera('shared-camera', -Math.PI / 3, Math.PI / 2.7, 8, Vector3.Zero(), scene)
     camera.attachControl(canvas, false)
     configureCameraSensitivity(camera, isTouchViewport())
