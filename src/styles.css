@@ -272,3 +272,40 @@
 .studioLightingPanel .previewLightingPanelHeader strong{color:#243447}
 .studioLightingPanel .previewLightingField>span{color:#46596a}
 @media(max-width:600px){.studioLightingToggle{top:12px;right:12px;padding:10px 12px;font-size:11px}.studioLightingPanel{top:59px;right:12px;width:min(330px,calc(100% - 24px));padding:16px}}
+
+
+/* Studio local-light placement and per-light controls. */
+.studioLightingPanel{max-height:calc(100% - 88px);overflow-y:auto;overscroll-behavior:contain}
+.studioLocalLights{margin:16px 0 14px;padding:13px;border:1px solid #e1e8ed;border-radius:12px;background:linear-gradient(180deg,#fbfdfe,#f5f8fa)}
+.studioLocalLightsHeading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px}
+.studioLocalLightsHeading strong{display:flex;align-items:center;gap:7px;color:#243747;font-size:12px}
+.studioLocalLightsHeading strong svg{color:#d69a2d}
+.studioLocalLightsHeading small{display:block;margin-top:4px;color:#7b8996;font-size:10px;line-height:1.4}
+.studioLocalLightsHeading>span{display:grid;place-items:center;min-width:25px;height:25px;padding:0 7px;border-radius:8px;background:#e8f4f2;color:#087f75;font-size:11px;font-weight:800}
+.studioAddLightButton{display:flex;align-items:center;justify-content:center;gap:7px;width:100%;padding:10px 12px;border:1px solid #0d9f91;border-radius:9px;background:#e8f7f5;color:#087f75;font-size:11px;font-weight:800;cursor:pointer;transition:.16s}
+.studioAddLightButton:hover{background:#d8f1ed;box-shadow:0 3px 12px #0d9f9122}
+.studioAddLightButton:disabled{opacity:.45;cursor:not-allowed}
+.studioPlacementNotice{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 10px;border:1px solid #e8c777;border-radius:9px;background:#fff8e8;color:#795c1c;font-size:10px;line-height:1.4}
+.studioPlacementNotice button{flex:0 0 auto;border:1px solid #dfc47e;border-radius:7px;background:#fff;color:#795c1c;padding:6px 9px;font-size:10px;font-weight:700;cursor:pointer}
+.studioLightList{display:flex;flex-direction:column;gap:5px;max-height:112px;overflow:auto;margin-top:10px}
+.studioLightItem{display:flex;align-items:center;gap:8px;width:100%;padding:8px 9px;border:1px solid #e3e9ee;border-radius:8px;background:#fff;color:#425466;text-align:left;font-size:11px;cursor:pointer}
+.studioLightItem.active{border-color:#0d9f91;background:#eff9f7;color:#087f75}
+.studioLightSwatch{width:12px;height:12px;flex:0 0 12px;border:1px solid #b9c4cc;border-radius:50%;box-shadow:0 0 0 3px #f0f3f5}
+.studioLightItem>span:nth-child(2){flex:1;font-weight:750}
+.studioLightItem small{color:#7f8c98;font-size:9px}
+.studioLightEditor{margin-top:10px;padding:11px;border:1px solid #dce6eb;border-radius:9px;background:#fff}
+.studioLightEditorTitle{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;color:#2b3d4d;font-size:11px}
+.studioLightEditorTitle button{display:grid;place-items:center;width:27px;height:27px;border:1px solid #f0dada;border-radius:7px;background:#fff6f6;color:#b34c4c;cursor:pointer}
+.studioLightCheck{display:flex;align-items:center;gap:7px;margin:0 0 10px;color:#536474;font-size:10px}
+.studioLightCheck input{accent-color:#0d9f91}
+.studioLightControl{display:flex;align-items:center;justify-content:space-between;margin:8px 0 12px;color:#536474;font-size:10px;font-weight:650}
+.studioLightControl input{width:42px;height:27px;padding:0;border:0;background:transparent;cursor:pointer}
+.studioLightEditor .previewLightingField{margin-bottom:12px}
+.studioLightPosition{margin-top:5px;color:#536474;font-size:10px;font-weight:700}
+.studioLightPosition>div{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:7px}
+.studioLightPosition label{display:flex;flex-direction:column;gap:4px;color:#7a8995;font-size:9px;font-weight:700}
+.studioLightPosition input{width:100%;min-width:0;padding:7px 5px;border:1px solid #dce4e9;border-radius:7px;background:#f9fbfc;color:#344657;font-size:10px;font-variant-numeric:tabular-nums}
+.studioLightPosition input:focus{outline:2px solid #0d9f9133;border-color:#0d9f91}
+@media(max-width:600px){.studioLightingPanel{max-height:calc(100% - 76px)}.studioLocalLights{padding:11px}}
+
+.viewport.light-placement-active canvas{cursor:crosshair!important}

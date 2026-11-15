@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh, Viewport, DynamicTexture, DefaultRenderingPipeline, ShadowGenerator, ImageProcessingConfiguration } from '@babylonjs/core'
+import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, PointLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh, Viewport, DynamicTexture, DefaultRenderingPipeline, ShadowGenerator, ImageProcessingConfiguration } from '@babylonjs/core'
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader'
 import '@babylonjs/loaders/glTF'
 import { DracoDecoder } from '@babylonjs/core/Meshes/Compression/dracoDecoder'
 import { GLTF2Export } from '@babylonjs/serializers/glTF'
-import { Upload, Eye, EyeOff, Trash2, Download, Layers, Paintbrush, RotateCcw, Box, ChevronRight, ChevronDown, Share2, Copy, Clock, ExternalLink, Search, X, Undo2, Redo2, Scissors, Pencil, SlidersHorizontal } from 'lucide-react'
+import { Upload, Eye, EyeOff, Trash2, Download, Layers, Paintbrush, RotateCcw, Box, ChevronRight, ChevronDown, Share2, Copy, Clock, ExternalLink, Search, X, Undo2, Redo2, Scissors, Pencil, SlidersHorizontal, Lightbulb, Plus } from 'lucide-react'
 import './styles.css'
 
 // Browser-friendly photorealistic rendering baseline. This improves light response,
@@ -45,6 +45,7 @@ function registerPhotorealisticMeshes(scene: Scene, roots: Node[]) {
 type Item = { id: number; name: string; depth: number; visible: boolean; hasMesh: boolean; parentId: number | null }
 type CutawayWall = { name: string; root: Node; meshes: AbstractMesh[]; center: Vector3; direction: Vector3 }
 type CutawayMaterial = { mesh: AbstractMesh; original: Material; faded: Material; baseAlpha: number }
+type StudioLightData = { id: number; name: string; x: number; y: number; z: number; color: string; intensity: number; range: number; enabled: boolean }
 const cutawayBaseVisibility = new WeakMap<AbstractMesh, boolean>()
 type Editor = { scene: Scene; camera: ArcRotateCamera; highlight: HighlightLayer; nodes: Map<number, Node>; rootNodes: Node[]; cutawayWalls: CutawayWall[]; cutawayMaterials: Map<number, CutawayMaterial>; cutawayEnabled: boolean; activeCutawaySignature: string; cutawayCenter: Vector3; cutawaySize: Vector3 }
 type ModelSnapshot = { hiddenIds: Set<number>; deletedIds: Set<number>; activeGeneratedIds: Set<number> }
@@ -332,6 +333,12 @@ function EditorApp() {
   const [quality, setQuality] = useState(75)
   const [normalStrength, setNormalStrength] = useState(0.75)
   const [studioLightingOpen, setStudioLightingOpen] = useState(false)
+  const [studioLights, setStudioLights] = useState<StudioLightData[]>([])
+  const [selectedStudioLightId, setSelectedStudioLightId] = useState<number | null>(null)
+  const [lightPlacementMode, setLightPlacementMode] = useState(false)
+  const studioLightObjectsRef = useRef<Map<number, { light: PointLight; marker: Mesh }>>(new Map())
+  const nextStudioLightIdRef = useRef(1)
+  const lightPlacementModeRef = useRef(false)
   const [globalMaterialColor, setGlobalMaterialColor] = useState('#ffffff')
   const [globalRoughness, setGlobalRoughness] = useState(0.62)
   const [globalMetallic, setGlobalMetallic] = useState(0.12)
@@ -767,6 +774,41 @@ function EditorApp() {
         return
       }
       if (info.type !== PointerEventTypes.POINTERDOWN) return
+      if (lightPlacementModeRef.current) {
+        const pick = info.pickInfo
+        if (!pick?.hit || !pick.pickedPoint || !modelRef.current) {
+          setStatus('Click directly on the model or floor to place the light.')
+          return
+        }
+        const id = nextStudioLightIdRef.current++
+        const point = pick.pickedPoint.clone()
+        const outward = point.subtract(ed.cutawayCenter)
+        if (outward.lengthSquared() > 0.0001) point.addInPlace(outward.normalize().scale(0.08))
+        const color = '#fff0d6'
+        const range = Math.max(1.5, Math.max(ed.cutawaySize.x, ed.cutawaySize.y, ed.cutawaySize.z) * 0.7)
+        const light = new PointLight(`mobica-local-light-${id}`, point.clone(), scene)
+        light.diffuse = Color3.FromHexString(color)
+        light.specular = Color3.FromHexString(color)
+        light.intensity = 1.5
+        light.range = range
+        const marker = MeshBuilder.CreateSphere(`mobica-local-light-marker-${id}`, { diameter: Math.max(0.06, range * 0.035), segments: 12 }, scene)
+        marker.position.copyFrom(point)
+        marker.isPickable = false
+        const markerMaterial = new StandardMaterial(`mobica-local-light-marker-material-${id}`, scene)
+        markerMaterial.disableLighting = true
+        markerMaterial.emissiveColor = Color3.FromHexString(color)
+        markerMaterial.diffuseColor = Color3.Black()
+        marker.material = markerMaterial
+        studioLightObjectsRef.current.set(id, { light, marker })
+        const data: StudioLightData = { id, name: `Light ${id}`, x: point.x, y: point.y, z: point.z, color, intensity: 1.5, range, enabled: true }
+        setStudioLights(previous => [...previous, data])
+        setSelectedStudioLightId(id)
+        lightPlacementModeRef.current = false
+        setLightPlacementMode(false)
+        if (canvasRef.current) camera.attachControl(canvasRef.current, true)
+        setStatus(`${data.name} placed. Adjust its color, intensity, range and position in Lighting & quality.`)
+        return
+      }
       const picked = info.pickInfo?.pickedMesh
       if (!picked || !modelRef.current) return
       let current: Node | null = picked
@@ -783,7 +825,7 @@ function EditorApp() {
     })
     const resize = () => engine.resize()
     window.addEventListener('resize', resize)
-    return () => { window.removeEventListener('resize', resize); canvasRef.current?.removeEventListener('wheel', preventPageWheel); editorRef.current = null; engineRef.current = null; engine.dispose() }
+    return () => { window.removeEventListener('resize', resize); canvasRef.current?.removeEventListener('wheel', preventPageWheel); studioLightObjectsRef.current.forEach(({ light, marker }) => { light.dispose(); marker.dispose(false, true) }); studioLightObjectsRef.current.clear(); editorRef.current = null; engineRef.current = null; engine.dispose() }
   }, [])
   const updateFloor = (changes: { enabled?: boolean; color?: string; size?: number; textureFile?: File }) => {
     const ed = editorRef.current
@@ -792,7 +834,7 @@ function EditorApp() {
     let floor = floorRef.current
     if (!floor) {
       const mesh = MeshBuilder.CreateGround('viewer-floor-layer', { width: 4, height: 4, subdivisions: 1 }, ed.scene)
-      mesh.isPickable = false
+      mesh.isPickable = true
       mesh.receiveShadows = true
       const material = new StandardMaterial('viewer-floor-material', ed.scene)
       material.diffuseColor = Color3.FromHexString(floorColor)
@@ -838,6 +880,14 @@ function EditorApp() {
     const ed = editorRef.current
     if (!ed) return
     invalidateExportSizes()
+    lightPlacementModeRef.current = false
+    setLightPlacementMode(false)
+    if (canvasRef.current) ed.camera.attachControl(canvasRef.current, true)
+    studioLightObjectsRef.current.forEach(({ light, marker }) => { light.dispose(); marker.dispose(false, true) })
+    studioLightObjectsRef.current.clear()
+    nextStudioLightIdRef.current = 1
+    setStudioLights([])
+    setSelectedStudioLightId(null)
     setBusy(true); setStatus('Loading model…')
     const url = URL.createObjectURL(file)
     try {
@@ -1091,6 +1141,48 @@ function EditorApp() {
       else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = value
     }
   }
+  const startPlaceStudioLight = () => {
+    if (!modelRef.current || !editorRef.current) { setStatus('Upload a model before placing lights.'); return }
+    lightPlacementModeRef.current = true
+    setLightPlacementMode(true)
+    editorRef.current.camera.detachControl()
+    setStatus('Light placement active: click a point on the model or floor to place a light.')
+  }
+  const cancelPlaceStudioLight = () => {
+    lightPlacementModeRef.current = false
+    setLightPlacementMode(false)
+    if (canvasRef.current) editorRef.current?.camera.attachControl(canvasRef.current, true)
+    setStatus('Light placement cancelled.')
+  }
+  const updateStudioLight = (id: number, changes: Partial<StudioLightData>) => {
+    setStudioLights(previous => previous.map(item => item.id === id ? { ...item, ...changes } : item))
+    const objects = studioLightObjectsRef.current.get(id)
+    if (!objects) return
+    const current = studioLights.find(item => item.id === id)
+    if (!current) return
+    const next: StudioLightData = { ...current, ...changes }
+    objects.light.position.set(next.x, next.y, next.z)
+    objects.marker.position.set(next.x, next.y, next.z)
+    objects.light.diffuse = Color3.FromHexString(next.color)
+    objects.light.specular = Color3.FromHexString(next.color)
+    objects.light.intensity = next.intensity
+    objects.light.range = next.range
+    objects.light.setEnabled(next.enabled)
+    const markerMaterial = objects.marker.material
+    if (markerMaterial instanceof StandardMaterial) markerMaterial.emissiveColor = Color3.FromHexString(next.color)
+    objects.marker.setEnabled(next.enabled)
+  }
+  const deleteStudioLight = (id: number) => {
+    const objects = studioLightObjectsRef.current.get(id)
+    objects?.light.dispose()
+    objects?.marker.dispose(false, true)
+    studioLightObjectsRef.current.delete(id)
+    setStudioLights(previous => previous.filter(item => item.id !== id))
+    setSelectedStudioLightId(previous => previous === id ? null : previous)
+    setStatus('Local light removed from Studio.')
+  }
+  const selectedStudioLight = studioLights.find(item => item.id === selectedStudioLightId) ?? null
+
   const resetStudioLighting = () => {
     const scene = editorRef.current?.scene
     setExposure(1); setEnvironment(0.32); setNormalStrength(0.75)
@@ -1780,7 +1872,7 @@ function EditorApp() {
       </div>
       {searchTerms.length > 0 && <div className="searchSummary"><span>{matchingLayerIds.size} matching layer{matchingLayerIds.size === 1 ? '' : 's'}</span>{matchingLayerIds.size > 0 && <div className="searchActions"><button className="btn searchHide" onClick={hideMatchingLayers}><EyeOff size={13}/> Hide matches</button><button className="btn searchShow" onClick={unhideMatchingLayers}><Eye size={13}/> Unhide matches</button><button className="btn" onClick={() => openMaterialReplacement([...matchingLayerIds])}><Paintbrush size={13}/> Edit all</button><button className="btn danger searchDelete" onClick={deleteMatchingLayers}><Trash2 size={13}/> Delete matches</button></div>}</div>}
       <p className="hint">Use the checkboxes to select layers for bulk actions. Click a layer name or an object in the drawing to highlight it.</p><p className="hint">Click a cabinet door in the model or select its layer here. Hide it to reveal the interior.</p><div className="layers">{items.length ? (searchTerms.length && matchingLayerIds.size === 0 ? <div className="empty">No layers match “{layerSearch}”</div> : items.map(renderItem)) : <div className="empty">No model loaded</div>}</div></aside>
-      <section className="viewport"><canvas ref={canvasRef}/>{!filename && <iframe className="brandExperienceFrame" src="/brand-experience.html" title="Interactive Mobica 3D brand experience" />}{filename && <div className="viewportBadge">BABYLON.JS · PBR RENDERER</div>}{filename && <>
+      <section className={`viewport ${lightPlacementMode ? 'light-placement-active' : ''}`}><canvas ref={canvasRef}/>{!filename && <iframe className="brandExperienceFrame" src="/brand-experience.html" title="Interactive Mobica 3D brand experience" />}{filename && <div className="viewportBadge">BABYLON.JS · PBR RENDERER</div>}{filename && <>
         <button className={`studioLightingToggle ${studioLightingOpen ? 'active' : ''}`} onClick={() => setStudioLightingOpen(open => !open)} aria-expanded={studioLightingOpen}><SlidersHorizontal size={16}/> Lighting &amp; quality</button>
         {studioLightingOpen && <section className="studioLightingPanel" aria-label="Studio lighting and quality controls">
           <div className="previewLightingPanelHeader"><div><strong>Lighting &amp; quality</strong><small>Adjust the Studio model appearance</small></div><button className="previewLightingClose" onClick={() => setStudioLightingOpen(false)} aria-label="Close lighting controls"><X size={16}/></button></div>
@@ -1788,6 +1880,19 @@ function EditorApp() {
           <label className="previewLightingField"><span><span>Environment light</span><b>{environment.toFixed(2)}</b></span><input type="range" min="0" max="1.2" step="0.02" value={environment} onChange={event => { const value = Number(event.target.value); setEnvironment(value); const scene = editorRef.current?.scene; if (scene) scene.environmentIntensity = value }}/></label>
           <label className="previewLightingField"><span><span>Surface detail</span><b>{normalStrength.toFixed(2)}</b></span><input type="range" min="0" max="2" step="0.05" value={normalStrength} onChange={event => updateStudioNormalStrength(Number(event.target.value))}/></label>
           <label className="previewLightingField"><span><span>Render quality</span><b>{quality}%</b></span><input type="range" min="25" max="100" step="5" value={quality} onChange={event => updateQuality(Number(event.target.value))}/></label>
+          <div className="studioLocalLights">
+            <div className="studioLocalLightsHeading"><div><strong><Lightbulb size={15}/> Lights in specific places</strong><small>Place additional lights directly on the 3D model</small></div><span>{studioLights.length}</span></div>
+            {!lightPlacementMode ? <button className="studioAddLightButton" onClick={startPlaceStudioLight} disabled={!filename}><Plus size={15}/> Place light in scene</button> : <div className="studioPlacementNotice"><span>Click a point on the model to place the light.</span><button onClick={cancelPlaceStudioLight}>Cancel</button></div>}
+            {studioLights.length > 0 && <div className="studioLightList">{studioLights.map(light => <button key={light.id} className={`studioLightItem ${selectedStudioLightId === light.id ? 'active' : ''}`} onClick={() => setSelectedStudioLightId(light.id)}><span className="studioLightSwatch" style={{ background: light.color }}/><span>{light.name}</span><small>{light.enabled ? 'On' : 'Off'}</small></button>)}</div>}
+            {selectedStudioLight && <div className="studioLightEditor">
+              <div className="studioLightEditorTitle"><strong>{selectedStudioLight.name}</strong><button onClick={() => deleteStudioLight(selectedStudioLight.id)} title="Delete light"><Trash2 size={14}/></button></div>
+              <label className="studioLightCheck"><input type="checkbox" checked={selectedStudioLight.enabled} onChange={event => updateStudioLight(selectedStudioLight.id, { enabled: event.target.checked })}/> Light enabled</label>
+              <label className="studioLightControl"><span>Color</span><input type="color" value={selectedStudioLight.color} onChange={event => updateStudioLight(selectedStudioLight.id, { color: event.target.value })}/></label>
+              <label className="previewLightingField"><span><span>Intensity</span><b>{selectedStudioLight.intensity.toFixed(2)}</b></span><input type="range" min="0" max="5" step="0.05" value={selectedStudioLight.intensity} onChange={event => updateStudioLight(selectedStudioLight.id, { intensity: Number(event.target.value) })}/></label>
+              <label className="previewLightingField"><span><span>Range</span><b>{selectedStudioLight.range.toFixed(2)}</b></span><input type="range" min="0.5" max="20" step="0.25" value={selectedStudioLight.range} onChange={event => updateStudioLight(selectedStudioLight.id, { range: Number(event.target.value) })}/></label>
+              <div className="studioLightPosition"><span>Position</span><div><label>X<input type="number" step="0.1" value={selectedStudioLight.x.toFixed(2)} onChange={event => updateStudioLight(selectedStudioLight.id, { x: Number(event.target.value) })}/></label><label>Y<input type="number" step="0.1" value={selectedStudioLight.y.toFixed(2)} onChange={event => updateStudioLight(selectedStudioLight.id, { y: Number(event.target.value) })}/></label><label>Z<input type="number" step="0.1" value={selectedStudioLight.z.toFixed(2)} onChange={event => updateStudioLight(selectedStudioLight.id, { z: Number(event.target.value) })}/></label></div></div>
+            </div>}
+          </div>
           <div className="previewLightingFooter"><span>Higher quality uses more device resources.</span><button onClick={resetStudioLighting}>Reset</button></div>
         </section>}
       </>}{(filename || busy) && <div className="status">{busy ? 'Working… ' : ''}{status}</div>}</section>
