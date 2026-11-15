@@ -229,7 +229,7 @@
 
 /* Customer preview: compact, polished lighting and quality controls. */
 .previewLightingToggle{
-  position:absolute;z-index:8;top:16px;right:16px;
+  position:absolute;z-index:30;top:16px;right:16px;
   display:flex;align-items:center;gap:9px;
   padding:11px 15px;border:1px solid #dbe4eb;border-radius:11px;
   background:rgba(255,255,255,.94);color:#263747;
@@ -241,7 +241,7 @@
   border-color:#0d9f91;color:#087f75;box-shadow:0 7px 22px rgba(13,159,145,.16)
 }
 .previewLightingPanel{
-  position:absolute;z-index:9;top:66px;right:16px;width:min(330px,calc(100% - 32px));
+  position:absolute;z-index:31;top:66px;right:16px;width:min(330px,calc(100% - 32px));
   padding:18px;border:1px solid #e0e7ed;border-radius:16px;
   background:rgba(255,255,255,.97);color:#243447;
   box-shadow:0 18px 55px rgba(20,38,55,.18);backdrop-filter:blur(18px);
@@ -261,5 +261,9 @@
 .previewLightingFooter button:hover{border-color:#0d9f91;color:#087f75}
 @media(max-width:600px){
   .previewLightingToggle{top:12px;right:12px;padding:10px 12px;font-size:11px}
-  .previewLightingPanel{top:59px;right:12px;width:min(330px,calc(100% - 24px));padding:16px}
+  .previewLightingPanel{top:59px;right:12px;width:min(330px,calc(100% - 24px));padding:16px;max-height:calc(100% - 78px);overflow:auto}
 }
+
+/* Keep lighting controls visible even on the initial choose-view preview screen. */
+.sharedViewport > .previewLightingToggle{z-index:30}
+.sharedViewport > .previewLightingPanel{z-index:31}

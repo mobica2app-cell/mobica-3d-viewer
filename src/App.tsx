@@ -1887,7 +1887,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const [viewerEntered, setViewerEntered] = useState(false)
   const [previewReady, setPreviewReady] = useState(false)
   const [previewProgress, setPreviewProgress] = useState('Preparing model preview…')
-  const [lightingOpen, setLightingOpen] = useState(false)
+  const [lightingOpen, setLightingOpen] = useState(true)
   const [previewNormalStrength, setPreviewNormalStrength] = useState(0.75)
   const [previewExposure, setPreviewExposure] = useState(1)
   const [previewEnvironment, setPreviewEnvironment] = useState(0.32)
@@ -2200,6 +2200,22 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     </header>
     <main className={`sharedViewport ${!previewReady ? 'previewLoading' : ''}`}>
       <canvas ref={canvasRef}/>
+      {previewReady && !error && <>
+        <button className={`previewLightingToggle ${lightingOpen ? 'active' : ''}`} onClick={() => setLightingOpen(open => !open)} aria-expanded={lightingOpen}>
+          <SlidersHorizontal size={16}/> Lighting & quality
+        </button>
+        {lightingOpen && <section className="previewLightingPanel" aria-label="Lighting and quality controls">
+          <div className="previewLightingPanelHeader">
+            <div><strong>Lighting & quality</strong><small>Customize how the design looks</small></div>
+            <button className="previewLightingClose" onClick={() => setLightingOpen(false)} aria-label="Close lighting controls"><X size={16}/></button>
+          </div>
+          <label className="previewLightingField"><span><span>Brightness</span><b>{previewExposure.toFixed(2)}×</b></span><input type="range" min="0.35" max="1.8" step="0.05" value={previewExposure} onChange={event => { const value = Number(event.target.value); setPreviewExposure(value); const scene = sharedEditorRef.current?.scene; if (scene) scene.imageProcessingConfiguration.exposure = value }}/></label>
+          <label className="previewLightingField"><span><span>Environment light</span><b>{previewEnvironment.toFixed(2)}</b></span><input type="range" min="0" max="1.2" step="0.02" value={previewEnvironment} onChange={event => { const value = Number(event.target.value); setPreviewEnvironment(value); const scene = sharedEditorRef.current?.scene; if (scene) scene.environmentIntensity = value }}/></label>
+          <label className="previewLightingField"><span><span>Surface detail</span><b>{previewNormalStrength.toFixed(2)}</b></span><input type="range" min="0" max="2" step="0.05" value={previewNormalStrength} onChange={event => { const value = Number(event.target.value); setPreviewNormalStrength(value); const scene = sharedEditorRef.current?.scene; if (scene) for (const material of scene.materials) { if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = value; else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = value } }}/></label>
+          <label className="previewLightingField"><span><span>Render quality</span><b>{previewQuality}%</b></span><input type="range" min="25" max="100" step="5" value={previewQuality} onChange={event => { const value = Number(event.target.value); setPreviewQuality(value); const engine = sharedEngineRef.current; const scene = sharedEditorRef.current?.scene; if (engine && scene) { engine.setHardwareScalingLevel(1.75 - (value / 100) * 1.25); const anisotropy = Math.max(1, Math.round((value / 100) * 16)); for (const texture of scene.textures) texture.anisotropicFilteringLevel = anisotropy } }}/></label>
+          <div className="previewLightingFooter"><span>Higher quality uses more device resources.</span><button onClick={() => { setPreviewExposure(1); setPreviewEnvironment(0.32); setPreviewNormalStrength(0.75); setPreviewQuality(75); const scene = sharedEditorRef.current?.scene; const engine = sharedEngineRef.current; if (scene) { scene.imageProcessingConfiguration.exposure = 1; scene.environmentIntensity = 0.32; for (const material of scene.materials) { if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = 0.75; else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = 0.75 } } if (engine && scene) { engine.setHardwareScalingLevel(1.75 - (75 / 100) * 1.25); for (const texture of scene.textures) texture.anisotropicFilteringLevel = 12 } }}>Reset</button></div>
+        </section>}
+      </>}
       {previewReady && !viewerEntered && !error && <div className="previewChoiceOverlay">
         <div className="previewChoiceHeading"><h1>Choose model view</h1><p>Inner division shows the model without manually hidden layers. Outer division includes all layers.</p></div>
         <div className="previewChoiceGrid">
@@ -2217,20 +2233,6 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
       {error && <div className="sharedMessage errorMessage"><h2>Link unavailable</h2><p>{error}</p></div>}
       {previewReady && viewerEntered && !error && <>
         <div className="sharedFileName">{info?.filename}</div>
-        <button className={`previewLightingToggle ${lightingOpen ? 'active' : ''}`} onClick={() => setLightingOpen(open => !open)} aria-expanded={lightingOpen}>
-          <SlidersHorizontal size={16}/> Lighting & quality
-        </button>
-        {lightingOpen && <section className="previewLightingPanel" aria-label="Lighting and quality controls">
-          <div className="previewLightingPanelHeader">
-            <div><strong>Lighting & quality</strong><small>Customize how the design looks</small></div>
-            <button className="previewLightingClose" onClick={() => setLightingOpen(false)} aria-label="Close lighting controls"><X size={16}/></button>
-          </div>
-          <label className="previewLightingField"><span><span>Brightness</span><b>{previewExposure.toFixed(2)}×</b></span><input type="range" min="0.35" max="1.8" step="0.05" value={previewExposure} onChange={event => { const value = Number(event.target.value); setPreviewExposure(value); const scene = sharedEditorRef.current?.scene; if (scene) scene.imageProcessingConfiguration.exposure = value }}/></label>
-          <label className="previewLightingField"><span><span>Environment light</span><b>{previewEnvironment.toFixed(2)}</b></span><input type="range" min="0" max="1.2" step="0.02" value={previewEnvironment} onChange={event => { const value = Number(event.target.value); setPreviewEnvironment(value); const scene = sharedEditorRef.current?.scene; if (scene) scene.environmentIntensity = value }}/></label>
-          <label className="previewLightingField"><span><span>Surface detail</span><b>{previewNormalStrength.toFixed(2)}</b></span><input type="range" min="0" max="2" step="0.05" value={previewNormalStrength} onChange={event => { const value = Number(event.target.value); setPreviewNormalStrength(value); const scene = sharedEditorRef.current?.scene; if (scene) for (const material of scene.materials) { if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = value; else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = value } }}/></label>
-          <label className="previewLightingField"><span><span>Render quality</span><b>{previewQuality}%</b></span><input type="range" min="25" max="100" step="5" value={previewQuality} onChange={event => { const value = Number(event.target.value); setPreviewQuality(value); const engine = sharedEngineRef.current; const scene = sharedEditorRef.current?.scene; if (engine && scene) { engine.setHardwareScalingLevel(1.75 - (value / 100) * 1.25); const anisotropy = Math.max(1, Math.round((value / 100) * 16)); for (const texture of scene.textures) texture.anisotropicFilteringLevel = anisotropy } }}/></label>
-          <div className="previewLightingFooter"><span>Higher quality uses more device resources.</span><button onClick={() => { setPreviewExposure(1); setPreviewEnvironment(0.32); setPreviewNormalStrength(0.75); setPreviewQuality(75); const scene = sharedEditorRef.current?.scene; const engine = sharedEngineRef.current; if (scene) { scene.imageProcessingConfiguration.exposure = 1; scene.environmentIntensity = 0.32; for (const material of scene.materials) { if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = 0.75; else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = 0.75 } } if (engine && scene) { engine.setHardwareScalingLevel(1.75 - (75 / 100) * 1.25); for (const texture of scene.textures) texture.anisotropicFilteringLevel = 12 } }}>Reset</button></div>
-        </section>}
         <div className="overviewCircle" aria-hidden="true"/><div className="sharedHint"><span className="desktopHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</span><span className="mobileHint">Drag to rotate · Pinch to zoom</span></div></>}
     </main>
   </div>
