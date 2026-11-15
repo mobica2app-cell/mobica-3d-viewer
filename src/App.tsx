@@ -10,16 +10,6 @@ import './styles.css'
 // Browser-friendly photorealistic rendering baseline. This improves light response,
 // antialiasing, tone mapping and contact shadows without modifying imported materials.
 const sceneShadowGenerators = new WeakMap<Scene, ShadowGenerator>()
-
-// Keep Studio and customer Preview color response identical. ACES tone mapping
-// rolls off bright highlights more naturally while retaining the source GLB albedo.
-function configureRealisticColorRendering(scene: Scene) {
-  const image = scene.imageProcessingConfiguration
-  image.toneMappingEnabled = true
-  image.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES
-  image.exposure = 1
-  image.contrast = 1.08
-}
 function enablePhotorealisticRendering(scene: Scene, camera: ArcRotateCamera) {
   const pipeline = new DefaultRenderingPipeline('mobica-photorealistic-pipeline', true, scene, [camera])
   pipeline.samples = 4
@@ -341,6 +331,7 @@ function EditorApp() {
   const [environment, setEnvironment] = useState(0.32)
   const [quality, setQuality] = useState(75)
   const [normalStrength, setNormalStrength] = useState(0.75)
+  const [studioLightingOpen, setStudioLightingOpen] = useState(false)
   const [globalMaterialColor, setGlobalMaterialColor] = useState('#ffffff')
   const [globalRoughness, setGlobalRoughness] = useState(0.62)
   const [globalMetallic, setGlobalMetallic] = useState(0.12)
@@ -720,7 +711,9 @@ function EditorApp() {
     const scene = new Scene(engine)
     scene.clearColor = new Color4(1, 1, 1, 1)
     scene.useRightHandedSystem = true
-    configureRealisticColorRendering(scene)
+    scene.imageProcessingConfiguration.toneMappingEnabled = false // preserve base colors without ACES highlight shifts
+    scene.imageProcessingConfiguration.exposure = 1
+    scene.imageProcessingConfiguration.contrast = 1
     const camera = new ArcRotateCamera('camera', -Math.PI / 3, Math.PI / 2.7, 8, Vector3.Zero(), scene)
     camera.attachControl(canvasRef.current, false)
     configureCameraSensitivity(camera, isTouchViewport())
@@ -863,15 +856,17 @@ function EditorApp() {
       originalMaterialsRef.current.clear()
       originalMaterialNamesRef.current.clear()
       for (const root of roots) for (const mesh of findMeshes(root)) {
+        originalMaterialsRef.current.set(mesh.uniqueId, mesh.material)
         originalMaterialNamesRef.current.set(mesh.uniqueId, (mesh.material?.name ?? '').trim().toLocaleLowerCase())
       }
-      // Use the same subtle fabric/leather/wood/metal surface response as the
-      // customer Preview so Normal Strength and material lighting behave alike.
+      // Use the same subtle procedural surface detail as Customer Preview in Studio.
+      // Original GLB materials are already retained above for the Restore action.
       enhanceSharedPreviewMaterials(roots, ed.scene)
-      for (const root of roots) for (const mesh of findMeshes(root)) {
-        // Store the enhanced baseline so Reset keeps the realistic surface detail.
-        originalMaterialsRef.current.set(mesh.uniqueId, mesh.material)
-      }
+      updateStudioNormalStrength(0.75)
+      updateQuality(75)
+      setExposure(1)
+      setEnvironment(0.32)
+      setStudioLightingOpen(false)
       undoStackRef.current = []; redoStackRef.current = []; syncHistoryCounts()
       selectedIdsRef.current = new Set()
       setSelectedIds(new Set())
@@ -1087,6 +1082,33 @@ function EditorApp() {
     const anisotropy = Math.max(1, Math.round((value / 100) * 16))
     for (const texture of scene.textures) texture.anisotropicFilteringLevel = anisotropy
   }
+  const updateStudioNormalStrength = (value: number) => {
+    setNormalStrength(value)
+    const scene = editorRef.current?.scene
+    if (!scene) return
+    for (const material of scene.materials) {
+      if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = value
+      else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = value
+    }
+  }
+  const resetStudioLighting = () => {
+    const scene = editorRef.current?.scene
+    setExposure(1); setEnvironment(0.32); setNormalStrength(0.75)
+    setQuality(75)
+    if (scene) {
+      scene.imageProcessingConfiguration.exposure = 1
+      scene.environmentIntensity = 0.32
+      for (const material of scene.materials) {
+        if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = 0.75
+        else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = 0.75
+      }
+    }
+    const engine = engineRef.current
+    if (engine && scene) {
+      engine.setHardwareScalingLevel(1.75 - (75 / 100) * 1.25)
+      for (const texture of scene.textures) texture.anisotropicFilteringLevel = 12
+    }
+  }
   const toggleVisibility = (id: number) => {
     const node = editorRef.current?.nodes.get(id)
     if (!node) return
@@ -1282,7 +1304,8 @@ function EditorApp() {
         mesh.material = material
       }
     }
-    setNormalStrength(preset.normal)
+    enhanceSharedPreviewMaterials(model.roots, ed.scene)
+    updateStudioNormalStrength(preset.normal)
     setGlobalMaterialColor('#ffffff'); setGlobalRoughness(preset.roughness); setGlobalMetallic(preset.metallic)
     setExposure(preset.brightness)
     setEnvironment(preset.environment)
@@ -1304,11 +1327,13 @@ function EditorApp() {
       const original = originalMaterialsRef.current.get(mesh.uniqueId)
       if (original !== undefined) mesh.material = original
     }
+    enhanceSharedPreviewMaterials(model.roots, ed.scene)
+    updateStudioNormalStrength(0.75)
     ed.scene.imageProcessingConfiguration.exposure = 1
     ed.scene.environmentIntensity = 0.32
     const hemi = ed.scene.getLightByName('soft-fill'); if (hemi) hemi.intensity = 0.38
     const sun = ed.scene.getLightByName('soft-key'); if (sun) sun.intensity = 0.55
-    setExposure(1); setEnvironment(0.32); setNormalStrength(0.75); setGlobalMaterialColor('#ffffff'); setGlobalRoughness(0.75); setGlobalMetallic(0); setActivePreset('original')
+    setExposure(1); setEnvironment(0.32); setGlobalMaterialColor('#ffffff'); setGlobalRoughness(0.75); setGlobalMetallic(0); setActivePreset('original')
     setStatus('Original GLB materials and lighting restored.')
   }
 
@@ -1755,7 +1780,17 @@ function EditorApp() {
       </div>
       {searchTerms.length > 0 && <div className="searchSummary"><span>{matchingLayerIds.size} matching layer{matchingLayerIds.size === 1 ? '' : 's'}</span>{matchingLayerIds.size > 0 && <div className="searchActions"><button className="btn searchHide" onClick={hideMatchingLayers}><EyeOff size={13}/> Hide matches</button><button className="btn searchShow" onClick={unhideMatchingLayers}><Eye size={13}/> Unhide matches</button><button className="btn" onClick={() => openMaterialReplacement([...matchingLayerIds])}><Paintbrush size={13}/> Edit all</button><button className="btn danger searchDelete" onClick={deleteMatchingLayers}><Trash2 size={13}/> Delete matches</button></div>}</div>}
       <p className="hint">Use the checkboxes to select layers for bulk actions. Click a layer name or an object in the drawing to highlight it.</p><p className="hint">Click a cabinet door in the model or select its layer here. Hide it to reveal the interior.</p><div className="layers">{items.length ? (searchTerms.length && matchingLayerIds.size === 0 ? <div className="empty">No layers match “{layerSearch}”</div> : items.map(renderItem)) : <div className="empty">No model loaded</div>}</div></aside>
-      <section className="viewport"><canvas ref={canvasRef}/>{!filename && <iframe className="brandExperienceFrame" src="/brand-experience.html" title="Interactive Mobica 3D brand experience" />}{filename && <div className="viewportBadge">BABYLON.JS · PBR RENDERER</div>}{(filename || busy) && <div className="status">{busy ? 'Working… ' : ''}{status}</div>}</section>
+      <section className="viewport"><canvas ref={canvasRef}/>{!filename && <iframe className="brandExperienceFrame" src="/brand-experience.html" title="Interactive Mobica 3D brand experience" />}{filename && <div className="viewportBadge">BABYLON.JS · PBR RENDERER</div>}{filename && <>
+        <button className={`studioLightingToggle ${studioLightingOpen ? 'active' : ''}`} onClick={() => setStudioLightingOpen(open => !open)} aria-expanded={studioLightingOpen}><SlidersHorizontal size={16}/> Lighting &amp; quality</button>
+        {studioLightingOpen && <section className="studioLightingPanel" aria-label="Studio lighting and quality controls">
+          <div className="previewLightingPanelHeader"><div><strong>Lighting &amp; quality</strong><small>Adjust the Studio model appearance</small></div><button className="previewLightingClose" onClick={() => setStudioLightingOpen(false)} aria-label="Close lighting controls"><X size={16}/></button></div>
+          <label className="previewLightingField"><span><span>Brightness</span><b>{exposure.toFixed(2)}×</b></span><input type="range" min="0.35" max="1.8" step="0.05" value={exposure} onChange={event => { const value = Number(event.target.value); setExposure(value); const scene = editorRef.current?.scene; if (scene) scene.imageProcessingConfiguration.exposure = value }}/></label>
+          <label className="previewLightingField"><span><span>Environment light</span><b>{environment.toFixed(2)}</b></span><input type="range" min="0" max="1.2" step="0.02" value={environment} onChange={event => { const value = Number(event.target.value); setEnvironment(value); const scene = editorRef.current?.scene; if (scene) scene.environmentIntensity = value }}/></label>
+          <label className="previewLightingField"><span><span>Surface detail</span><b>{normalStrength.toFixed(2)}</b></span><input type="range" min="0" max="2" step="0.05" value={normalStrength} onChange={event => updateStudioNormalStrength(Number(event.target.value))}/></label>
+          <label className="previewLightingField"><span><span>Render quality</span><b>{quality}%</b></span><input type="range" min="25" max="100" step="5" value={quality} onChange={event => updateQuality(Number(event.target.value))}/></label>
+          <div className="previewLightingFooter"><span>Higher quality uses more device resources.</span><button onClick={resetStudioLighting}>Reset</button></div>
+        </section>}
+      </>}{(filename || busy) && <div className="status">{busy ? 'Working… ' : ''}{status}</div>}</section>
       <aside className="inspector"><div className="panelTitle"><Paintbrush size={16}/> Inspector</div>{selected != null && chosen() ? <><div className="selectedLabel">{selectedIds.size > 1 ? `${selectedIds.size} layers selected · editing primary: ${chosen()?.name}` : chosen()?.name}</div><div className="actions"><button className="btn" onClick={() => toggleSelectedVisibility(false)}><EyeOff size={15}/> Hide selected</button><button className="btn" onClick={() => toggleSelectedVisibility(true)}><Eye size={15}/> Show selected</button><button className="btn" onClick={selectAllLayersWithSelectedMaterial}><Layers size={15}/> Edit same material</button><button className="btn danger" onClick={remove}><Trash2 size={15}/> Delete</button></div>
       <div className="editorSection"><div className="editorSectionTitle">Material</div><label className="field">Base color<input type="color" value={color} onChange={e => updateColor(e.target.value)}/></label><label className="field">Roughness <span>{roughness.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={roughness} onChange={e => updateRoughness(Number(e.target.value))}/></label><label className="field">Metallic <span>{metallic.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={metallic} onChange={e => updateMetallic(Number(e.target.value))}/></label><label className="field">Opacity <span>{Math.round(opacity * 100)}%</span><input type="range" min="0.1" max="1" step="0.01" value={opacity} onChange={e => updateOpacity(Number(e.target.value))}/></label><label className="btn full"><Upload size={15}/> Replace base-color texture<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateTexture(f); e.target.value = '' }}/></label><p className="hint">Texture placement uses the selected mesh's original UV coordinates.</p></div><div className="editorSection"><div className="editorSectionTitle"><Scissors size={14}/> Interactive mesh cut</div><p className="hint">Select the combined wall mesh, start drawing, then drag a line across the model from one edge to the opposite edge. The line defines the cutting plane from your current camera view.</p>{!cutDrawMode ? <button className="btn full" onClick={startDrawCut} disabled={!chosen()}><Scissors size={14}/> Draw cut on model</button> : <><div className="cutModeNotice">Cut mode active — drag across the selected mesh</div><button className="btn full" onClick={cancelDrawCut}><X size={14}/> Cancel cut</button></>}<p className="hint">Repeat on each new piece to separate all four walls. The cut creates two independently selectable mesh surfaces; it does not add closed caps.</p></div></> : <p className="hint">Select a layer or click any visible part of the model.</p>}
       <div className="separator"/><div className="panelTitle">Floor layer</div><p className="hint">Add a separate floor beneath the model. It stays independent from your GLB layers and materials.</p><label className="field"><span><input type="checkbox" checked={floorEnabled} onChange={e => updateFloor({ enabled: e.target.checked })}/> Show floor</span></label><label className="field">Floor color<input aria-label="Floor color" type="color" value={floorColor} onChange={e => updateFloor({ color: e.target.value })}/></label><label className="field">Floor size <span>{floorSize.toFixed(1)}×</span><input aria-label="Floor size" type="range" min="1" max="8" step="0.25" value={floorSize} onChange={e => updateFloor({ size: Number(e.target.value) })}/></label><label className="btn full"><Upload size={15}/> {floorTextureName ? 'Replace floor texture' : 'Add floor texture'}<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateFloor({ textureFile: f }); e.target.value = '' }}/></label>{floorTextureName && <p className="hint">Texture: {floorTextureName}</p>}<button className="btn full" onClick={() => { setFloorColor('#b8aa94'); setFloorSize(2.5); setFloorTextureName(''); const f = floorRef.current; if (f) { f.material.diffuseTexture?.dispose(); f.material.diffuseTexture = null; if (f.textureUrl) URL.revokeObjectURL(f.textureUrl); f.textureUrl = undefined; f.material.diffuseColor = Color3.FromHexString('#b8aa94') } updateFloor({ enabled: true, color: '#b8aa94', size: 2.5 }) }}><RotateCcw size={14}/> Reset floor</button><div className="separator"/><div className="panelTitle">Visual presets</div><p className="hint">Apply a complete look to every material in the loaded model. Original image textures and UVs are preserved.</p><div className="visualPresetGrid">{visualPresets.map(preset => <button key={preset.id} className={`visualPresetButton ${activePreset === preset.id ? 'active' : ''}`} onClick={() => applyVisualPreset(preset)}><span className={`presetSwatch preset-${preset.id}`}/><span>{preset.name}</span></button>)}</div><button className="btn full" onClick={resetVisualPreset}><RotateCcw size={14}/> Restore original materials</button><div className="separator"/><div className="panelTitle">Global material controls</div><label className="field">Color tint<input aria-label="Global material color" type="color" value={globalMaterialColor} onChange={e => { setGlobalMaterialColor(e.target.value); updateGlobalMaterialProperty('color', e.target.value) }}/></label><label className="field">Roughness <span>{globalRoughness.toFixed(2)}</span><input aria-label="Global roughness" type="range" min="0" max="1" step="0.01" value={globalRoughness} onChange={e => { const v = Number(e.target.value); setGlobalRoughness(v); updateGlobalMaterialProperty('roughness', v) }}/></label><label className="field">Metallic <span>{globalMetallic.toFixed(2)}</span><input aria-label="Global metallic" type="range" min="0" max="1" step="0.01" value={globalMetallic} onChange={e => { const v = Number(e.target.value); setGlobalMetallic(v); updateGlobalMaterialProperty('metallic', v) }}/></label><label className="field">Appearance material name<select aria-label="Material name for global texture" value={globalTextureMaterialName} onChange={e => setGlobalTextureMaterialName(e.target.value)}><option value="">Choose a material name…</option>{getAvailableOriginalMaterialNames().map(([key, displayName]) => <option key={key} value={key}>{displayName}</option>)}</select></label><label className="btn full"><Upload size={15}/> Upload texture for this material<input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={!globalTextureMaterialName} onChange={e => { const f = e.target.files?.[0]; if (f) updateGlobalTexture(f); e.target.value = '' }}/></label><p className="hint">Applies the texture only to meshes using the selected original GLB material name. Other materials remain unchanged. Each matching mesh keeps its UVs, opacity, roughness and metallic values.</p></aside></main>
@@ -1901,7 +1936,7 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
   const [viewerEntered, setViewerEntered] = useState(false)
   const [previewReady, setPreviewReady] = useState(false)
   const [previewProgress, setPreviewProgress] = useState('Preparing model preview…')
-  const [lightingOpen, setLightingOpen] = useState(true)
+  const [lightingOpen, setLightingOpen] = useState(false)
   const [previewNormalStrength, setPreviewNormalStrength] = useState(0.75)
   const [previewExposure, setPreviewExposure] = useState(1)
   const [previewEnvironment, setPreviewEnvironment] = useState(0.32)
@@ -1962,7 +1997,9 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     const scene = new Scene(engine)
     scene.clearColor = new Color4(1, 1, 1, 1)
     scene.useRightHandedSystem = true
-    configureRealisticColorRendering(scene)
+    scene.imageProcessingConfiguration.toneMappingEnabled = false
+    scene.imageProcessingConfiguration.exposure = 1
+    scene.imageProcessingConfiguration.contrast = 1
     const camera = new ArcRotateCamera('shared-camera', -Math.PI / 3, Math.PI / 2.7, 8, Vector3.Zero(), scene)
     camera.attachControl(canvas, false)
     configureCameraSensitivity(camera, isTouchViewport())
@@ -2212,22 +2249,6 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     </header>
     <main className={`sharedViewport ${!previewReady ? 'previewLoading' : ''}`}>
       <canvas ref={canvasRef}/>
-      {previewReady && !error && <>
-        <button className={`previewLightingToggle ${lightingOpen ? 'active' : ''}`} onClick={() => setLightingOpen(open => !open)} aria-expanded={lightingOpen}>
-          <SlidersHorizontal size={16}/> Lighting & quality
-        </button>
-        {lightingOpen && <section className="previewLightingPanel" aria-label="Lighting and quality controls">
-          <div className="previewLightingPanelHeader">
-            <div><strong>Lighting & quality</strong><small>Customize how the design looks</small></div>
-            <button className="previewLightingClose" onClick={() => setLightingOpen(false)} aria-label="Close lighting controls"><X size={16}/></button>
-          </div>
-          <label className="previewLightingField"><span><span>Brightness</span><b>{previewExposure.toFixed(2)}×</b></span><input type="range" min="0.35" max="1.8" step="0.05" value={previewExposure} onChange={event => { const value = Number(event.target.value); setPreviewExposure(value); const scene = sharedEditorRef.current?.scene; if (scene) scene.imageProcessingConfiguration.exposure = value }}/></label>
-          <label className="previewLightingField"><span><span>Environment light</span><b>{previewEnvironment.toFixed(2)}</b></span><input type="range" min="0" max="1.2" step="0.02" value={previewEnvironment} onChange={event => { const value = Number(event.target.value); setPreviewEnvironment(value); const scene = sharedEditorRef.current?.scene; if (scene) scene.environmentIntensity = value }}/></label>
-          <label className="previewLightingField"><span><span>Surface detail</span><b>{previewNormalStrength.toFixed(2)}</b></span><input type="range" min="0" max="2" step="0.05" value={previewNormalStrength} onChange={event => { const value = Number(event.target.value); setPreviewNormalStrength(value); const scene = sharedEditorRef.current?.scene; if (scene) for (const material of scene.materials) { if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = value; else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = value } }}/></label>
-          <label className="previewLightingField"><span><span>Render quality</span><b>{previewQuality}%</b></span><input type="range" min="25" max="100" step="5" value={previewQuality} onChange={event => { const value = Number(event.target.value); setPreviewQuality(value); const engine = sharedEngineRef.current; const scene = sharedEditorRef.current?.scene; if (engine && scene) { engine.setHardwareScalingLevel(1.75 - (value / 100) * 1.25); const anisotropy = Math.max(1, Math.round((value / 100) * 16)); for (const texture of scene.textures) texture.anisotropicFilteringLevel = anisotropy } }}/></label>
-          <div className="previewLightingFooter"><span>Higher quality uses more device resources.</span><button onClick={() => { setPreviewExposure(1); setPreviewEnvironment(0.32); setPreviewNormalStrength(0.75); setPreviewQuality(75); const scene = sharedEditorRef.current?.scene; const engine = sharedEngineRef.current; if (scene) { scene.imageProcessingConfiguration.exposure = 1; scene.environmentIntensity = 0.32; for (const material of scene.materials) { if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = 0.75; else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = 0.75 } } if (engine && scene) { engine.setHardwareScalingLevel(1.75 - (75 / 100) * 1.25); for (const texture of scene.textures) texture.anisotropicFilteringLevel = 12 } }}>Reset</button></div>
-        </section>}
-      </>}
       {previewReady && !viewerEntered && !error && <div className="previewChoiceOverlay">
         <div className="previewChoiceHeading"><h1>Choose model view</h1><p>Inner division shows the model without manually hidden layers. Outer division includes all layers.</p></div>
         <div className="previewChoiceGrid">
@@ -2245,6 +2266,20 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
       {error && <div className="sharedMessage errorMessage"><h2>Link unavailable</h2><p>{error}</p></div>}
       {previewReady && viewerEntered && !error && <>
         <div className="sharedFileName">{info?.filename}</div>
+        <button className={`previewLightingToggle ${lightingOpen ? 'active' : ''}`} onClick={() => setLightingOpen(open => !open)} aria-expanded={lightingOpen}>
+          <SlidersHorizontal size={16}/> Lighting & quality
+        </button>
+        {lightingOpen && <section className="previewLightingPanel" aria-label="Lighting and quality controls">
+          <div className="previewLightingPanelHeader">
+            <div><strong>Lighting & quality</strong><small>Customize how the design looks</small></div>
+            <button className="previewLightingClose" onClick={() => setLightingOpen(false)} aria-label="Close lighting controls"><X size={16}/></button>
+          </div>
+          <label className="previewLightingField"><span><span>Brightness</span><b>{previewExposure.toFixed(2)}×</b></span><input type="range" min="0.35" max="1.8" step="0.05" value={previewExposure} onChange={event => { const value = Number(event.target.value); setPreviewExposure(value); const scene = sharedEditorRef.current?.scene; if (scene) scene.imageProcessingConfiguration.exposure = value }}/></label>
+          <label className="previewLightingField"><span><span>Environment light</span><b>{previewEnvironment.toFixed(2)}</b></span><input type="range" min="0" max="1.2" step="0.02" value={previewEnvironment} onChange={event => { const value = Number(event.target.value); setPreviewEnvironment(value); const scene = sharedEditorRef.current?.scene; if (scene) scene.environmentIntensity = value }}/></label>
+          <label className="previewLightingField"><span><span>Surface detail</span><b>{previewNormalStrength.toFixed(2)}</b></span><input type="range" min="0" max="2" step="0.05" value={previewNormalStrength} onChange={event => { const value = Number(event.target.value); setPreviewNormalStrength(value); const scene = sharedEditorRef.current?.scene; if (scene) for (const material of scene.materials) { if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = value; else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = value } }}/></label>
+          <label className="previewLightingField"><span><span>Render quality</span><b>{previewQuality}%</b></span><input type="range" min="25" max="100" step="5" value={previewQuality} onChange={event => { const value = Number(event.target.value); setPreviewQuality(value); const engine = sharedEngineRef.current; const scene = sharedEditorRef.current?.scene; if (engine && scene) { engine.setHardwareScalingLevel(1.75 - (value / 100) * 1.25); const anisotropy = Math.max(1, Math.round((value / 100) * 16)); for (const texture of scene.textures) texture.anisotropicFilteringLevel = anisotropy } }}/></label>
+          <div className="previewLightingFooter"><span>Higher quality uses more device resources.</span><button onClick={() => { setPreviewExposure(1); setPreviewEnvironment(0.32); setPreviewNormalStrength(0.75); setPreviewQuality(75); const scene = sharedEditorRef.current?.scene; const engine = sharedEngineRef.current; if (scene) { scene.imageProcessingConfiguration.exposure = 1; scene.environmentIntensity = 0.32; for (const material of scene.materials) { if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = 0.75; else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = 0.75 } } if (engine && scene) { engine.setHardwareScalingLevel(1.75 - (75 / 100) * 1.25); for (const texture of scene.textures) texture.anisotropicFilteringLevel = 12 } }}>Reset</button></div>
+        </section>}
         <div className="overviewCircle" aria-hidden="true"/><div className="sharedHint"><span className="desktopHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</span><span className="mobileHint">Drag to rotate · Pinch to zoom</span></div></>}
     </main>
   </div>
