@@ -7,6 +7,7 @@ import { GLTF2Export } from '@babylonjs/serializers/glTF'
 import { Upload, Eye, EyeOff, Trash2, Download, Layers, Paintbrush, RotateCcw, Box, ChevronRight, ChevronDown, Share2, Copy, Clock, ExternalLink, Search, X, Undo2, Redo2, Scissors, Pencil, SlidersHorizontal } from 'lucide-react'
 import './styles.css'
 
+
 // Browser-friendly photorealistic rendering baseline. This improves light response,
 // antialiasing, tone mapping and contact shadows without modifying imported materials.
 const sceneShadowGenerators = new WeakMap<Scene, ShadowGenerator>()
