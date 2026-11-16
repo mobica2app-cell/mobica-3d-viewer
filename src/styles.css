@@ -309,3 +309,14 @@
 @media(max-width:600px){.studioLightingPanel{max-height:calc(100% - 76px)}.studioLocalLights{padding:11px}}
 
 .viewport.light-placement-active canvas{cursor:crosshair!important}
+
+
+/* Scene-level environment entries shown alongside imported model layers. */
+.environmentSceneLayer{border:1px solid #33415566;background:#1b2936;margin-top:5px;padding-right:8px}
+.environmentSceneLayer .layerName{font-weight:600;font-size:11px}
+.sceneLayerGlyph{width:19px;display:inline-flex;align-items:center;justify-content:center;font-size:17px;line-height:1}
+.environmentGlyph{color:#75c8e8}
+.floorGlyph{color:#d8b887}
+.sceneLayerSwatch{width:15px;height:15px;border:1px solid #ffffff70;border-radius:4px;flex:none}
+.sceneLayerStatus{font-size:9px;color:#9aa8b7;padding:2px 5px;border-radius:5px;background:#263544}
+.sceneLayerStatus.isOn{color:#8ce0c1;background:#174b3e}

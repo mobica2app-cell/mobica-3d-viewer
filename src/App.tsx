@@ -350,6 +350,7 @@ function EditorApp() {
   const floorRef = useRef<{ mesh: Mesh; material: StandardMaterial; textureUrl?: string } | null>(null)
   const [floorEnabled, setFloorEnabled] = useState(true)
   const [floorColor, setFloorColor] = useState('#b8aa94')
+  const [environmentColor, setEnvironmentColor] = useState('#ffffff')
   const [floorSize, setFloorSize] = useState(2.5)
   const [floorTextureName, setFloorTextureName] = useState('')
   const [autoCutaway, setAutoCutaway] = useState(true)
@@ -651,30 +652,78 @@ function EditorApp() {
     }
     else if (mat instanceof StandardMaterial) { setColor(mat.diffuseColor.toHexString()); setOpacity(mat.alpha ?? 1) }
   }
-  const focusLayer = (id: number | null) => {
-    setSelected(id)
-    syncTextureMaterialFromLayer(id)
-    const nextHighlight = id == null ? new Set<number>() : new Set([id])
+  const ENVIRONMENT_LAYER_ID = -1001
+  const FLOOR_LAYER_ID = -1002
+  const focusLayer = (id: number | null, additive = false) => {
+    // Normal click selects only this layer. Ctrl/Cmd-click adds or removes it
+    // from the current selection, matching familiar desktop layer workflows.
+    const nextSelection = additive ? new Set(selectedIdsRef.current) : new Set<number>()
+    if (id != null) {
+      if (additive && nextSelection.has(id)) nextSelection.delete(id)
+      else nextSelection.add(id)
+    }
+    selectedIdsRef.current = nextSelection
+    setSelectedIds(nextSelection)
+    const selectedOrder = [...nextSelection]
+    const primary = id != null && nextSelection.has(id)
+      ? id
+      : selectedOrder.length ? selectedOrder[selectedOrder.length - 1] : null
+    setSelected(primary)
+    syncTextureMaterialFromLayer(primary)
+    const nextHighlight = new Set(nextSelection)
     highlightedIdsRef.current = nextHighlight
     setHighlightedIds(nextHighlight)
     const ed = editorRef.current
     if (!ed) return
     ed.highlight.removeAllMeshes()
-    if (id == null) return
-    const node = ed.nodes.get(id)
+    for (const selectedId of nextSelection) {
+      const node = ed.nodes.get(selectedId)
+      if (!node) continue
+      for (const mesh of findMeshes(node)) {
+        if (mesh instanceof Mesh && mesh.isEnabled()) ed.highlight.addMesh(mesh, new Color3(0.1, 0.75, 0.95))
+      }
+    }
+    if (primary == null) return
+    const node = ed.nodes.get(primary)
     if (!node) return
-    for (const mesh of findMeshes(node)) if (mesh instanceof Mesh && mesh.isEnabled()) ed.highlight.addMesh(mesh, new Color3(0.1, 0.75, 0.95))
     const mat = findMeshes(node).find(m => m.material)?.material
     if (mat instanceof PBRMaterial) {
       setColor(mat.albedoColor.toHexString()); setRoughness(mat.roughness ?? 0.75)
       setMetallic(mat.metallic ?? 0); setOpacity(mat.alpha ?? 1)
     } else if (mat instanceof StandardMaterial) { setColor(mat.diffuseColor.toHexString()); setOpacity(mat.alpha ?? 1) }
   }
-  const toggleManualSelection = (id: number, checked: boolean) => {
-    const next = new Set(selectedIdsRef.current)
-    if (checked) next.add(id); else next.delete(id)
+  const focusEnvironmentLayer = (id: number) => {
+    selectedIdsRef.current = new Set()
+    setSelectedIds(new Set())
+    highlightedIdsRef.current = new Set()
+    setHighlightedIds(new Set())
+    setSelected(id)
+    syncTextureMaterialFromLayer(null)
+    editorRef.current?.highlight.removeAllMeshes()
+  }
+  const toggleManualSelection = (id: number, checked: boolean, additive = false) => {
+    const next = additive ? new Set(selectedIdsRef.current) : new Set<number>()
+    if (checked) next.add(id)
+    else next.delete(id)
     selectedIdsRef.current = next
     setSelectedIds(next)
+    const order = [...next]
+    const primary = checked ? id : order.length ? order[order.length - 1] : null
+    setSelected(primary)
+    syncTextureMaterialFromLayer(primary)
+    highlightedIdsRef.current = new Set(next)
+    setHighlightedIds(new Set(next))
+    const ed = editorRef.current
+    if (ed) {
+      ed.highlight.removeAllMeshes()
+      for (const selectedId of next) {
+        const node = ed.nodes.get(selectedId)
+        if (!node) continue
+        for (const mesh of findMeshes(node)) {
+          if (mesh instanceof Mesh && mesh.isEnabled()) ed.highlight.addMesh(mesh, new Color3(0.1, 0.75, 0.95))
+        }
+      }
+    }
   }
   const expandSelectionOneLevel = () => {
     const ed = editorRef.current
@@ -716,7 +765,7 @@ function EditorApp() {
     const engine = new Engine(canvasRef.current, true, { preserveDrawingBuffer: true, stencil: true, adaptToDeviceRatio: true })
     engineRef.current = engine
     const scene = new Scene(engine)
-    scene.clearColor = new Color4(1, 1, 1, 1)
+    scene.clearColor = Color4.FromHexString(`${environmentColor}ff`)
     scene.useRightHandedSystem = true
     scene.imageProcessingConfiguration.toneMappingEnabled = false // preserve base colors without ACES highlight shifts
     scene.imageProcessingConfiguration.exposure = 1
@@ -827,6 +876,12 @@ function EditorApp() {
     window.addEventListener('resize', resize)
     return () => { window.removeEventListener('resize', resize); canvasRef.current?.removeEventListener('wheel', preventPageWheel); studioLightObjectsRef.current.forEach(({ light, marker }) => { light.dispose(); marker.dispose(false, true) }); studioLightObjectsRef.current.clear(); editorRef.current = null; engineRef.current = null; engine.dispose() }
   }, [])
+  const updateEnvironmentColor = (value: string) => {
+    setEnvironmentColor(value)
+    const scene = editorRef.current?.scene
+    if (scene) scene.clearColor = Color4.FromHexString(`${value}ff`)
+  }
+
   const updateFloor = (changes: { enabled?: boolean; color?: string; size?: number; textureFile?: File }) => {
     const ed = editorRef.current
     const model = modelRef.current
@@ -977,7 +1032,7 @@ function EditorApp() {
   const toggleSelectedVisibility = (visible: boolean) => {
     const ed = editorRef.current
     if (!ed) return
-    const ids = selectedIdsRef.current.size ? [...selectedIdsRef.current] : highlightedIdsRef.current.size > 1 ? [...highlightedIdsRef.current] : selected == null ? [] : [selected]
+    const ids = selectedIdsRef.current.size ? [...selectedIdsRef.current] : highlightedIdsRef.current.size > 1 ? [...highlightedIdsRef.current] : selected == null || selected < 0 ? [] : [selected]
     if (!ids.length) return
     pushHistory()
     ids.forEach(id => visible ? modelRef.current?.hiddenIds.delete(id) : modelRef.current?.hiddenIds.add(id))
@@ -1227,7 +1282,7 @@ function EditorApp() {
     setStatus(`Deleted ${validIds.length} layer${validIds.length === 1 ? '' : 's'} · available in Undo`)
   }
   const remove = () => {
-    const ids = selectedIds.size ? [...selectedIds] : selected == null ? [] : [selected]
+    const ids = selectedIds.size ? [...selectedIds] : selected == null || selected < 0 ? [] : [selected]
     deleteLayers(ids)
   }
   const deleteLayer = (id: number) => deleteLayers([id])
@@ -1815,10 +1870,10 @@ function EditorApp() {
       <button className="chevron" onClick={() => { setExpanded(prev => { const n = new Set(prev); n.has(item.id) ? n.delete(item.id) : n.add(item.id); return n }) }}>
         {hasChildren ? expanded.has(item.id) ? <ChevronDown size={14}/> : <ChevronRight size={14}/> : <span style={{width:14}}/>}
       </button>
-      <input className="layerSelectCheckbox" type="checkbox" aria-label={`Select ${item.name}`} checked={selectedIds.has(item.id)} onChange={e => toggleManualSelection(item.id, e.target.checked)} />
+      <input className="layerSelectCheckbox" type="checkbox" aria-label={`Select ${item.name}`} checked={selectedIds.has(item.id)} onChange={e => toggleManualSelection(item.id, e.target.checked, e.ctrlKey || e.metaKey)} />
       {renamingId === item.id
         ? <input className="layerRenameInput" autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onClick={e => e.stopPropagation()} onBlur={() => commitRename(item.id)} onKeyDown={e => { if (e.key === 'Enter') commitRename(item.id); if (e.key === 'Escape') setRenamingId(null) }} />
-        : <button className="layerName" onClick={() => focusLayer(item.id)} title={`${item.name} · Click to highlight in the drawing; use the checkbox to select for actions`}>{item.name}</button>}
+        : <button className="layerName" onClick={event => focusLayer(item.id, event.ctrlKey || event.metaKey)} title={`${item.name} · Click to select; hold Ctrl/Cmd to add or remove layers`}>{item.name}</button>}
       <button className="iconBtn" title={`Rename ${item.name}`} aria-label={`Rename ${item.name}`} onClick={() => { setRenameValue(item.name); setRenamingId(item.id) }}><Pencil size={13}/></button>
       <button className="iconBtn" title="Hide/show" aria-label={`Hide or show ${item.name}`} onClick={() => toggleVisibility(item.id)}>{item.visible ? <Eye size={15}/> : <EyeOff size={15}/>}</button>
       <button className="iconBtn layerDeleteBtn" title={`Delete ${item.name}`} aria-label={`Delete ${item.name}`} onClick={() => deleteLayer(item.id)}><Trash2 size={14}/></button>
@@ -1871,7 +1926,7 @@ function EditorApp() {
         {layerSearch && <button className="searchClear" aria-label="Clear layer search" title="Clear search" onClick={() => setLayerSearch('')}><X size={14}/></button>}
       </div>
       {searchTerms.length > 0 && <div className="searchSummary"><span>{matchingLayerIds.size} matching layer{matchingLayerIds.size === 1 ? '' : 's'}</span>{matchingLayerIds.size > 0 && <div className="searchActions"><button className="btn searchHide" onClick={hideMatchingLayers}><EyeOff size={13}/> Hide matches</button><button className="btn searchShow" onClick={unhideMatchingLayers}><Eye size={13}/> Unhide matches</button><button className="btn" onClick={() => openMaterialReplacement([...matchingLayerIds])}><Paintbrush size={13}/> Edit all</button><button className="btn danger searchDelete" onClick={deleteMatchingLayers}><Trash2 size={13}/> Delete matches</button></div>}</div>}
-      <p className="hint">Use the checkboxes to select layers for bulk actions. Click a layer name or an object in the drawing to highlight it.</p><p className="hint">Click a cabinet door in the model or select its layer here. Hide it to reveal the interior.</p><div className="layers">{items.length ? (searchTerms.length && matchingLayerIds.size === 0 ? <div className="empty">No layers match “{layerSearch}”</div> : items.map(renderItem)) : <div className="empty">No model loaded</div>}</div></aside>
+      <p className="hint">Use the checkboxes to select layers for bulk actions. Click a layer name or an object in the drawing to highlight it.</p><p className="hint">Click a cabinet door in the model or select its layer here. Hide it to reveal the interior.</p><div className="layers">{items.length ? <>{searchTerms.length && matchingLayerIds.size === 0 ? <div className="empty">No layers match “{layerSearch}”</div> : items.map(renderItem)}<div className={`layer environmentSceneLayer ${selected === ENVIRONMENT_LAYER_ID ? 'focused active' : ''}`}><span className="sceneLayerGlyph environmentGlyph">◐</span><button className="layerName" onClick={() => focusEnvironmentLayer(ENVIRONMENT_LAYER_ID)}>Environment color</button><span className="sceneLayerSwatch" style={{ background: environmentColor }}/></div><div className={`layer environmentSceneLayer ${selected === FLOOR_LAYER_ID ? 'focused active' : ''}`}><span className="sceneLayerGlyph floorGlyph">▱</span><button className="layerName" onClick={() => focusEnvironmentLayer(FLOOR_LAYER_ID)}>Floor</button><button className="iconBtn" title={floorEnabled ? 'Hide floor' : 'Show floor'} aria-label={floorEnabled ? 'Hide floor' : 'Show floor'} onClick={() => updateFloor({ enabled: !floorEnabled })}>{floorEnabled ? <Eye size={14}/> : <EyeOff size={14}/>}</button></div></> : <div className="empty">No model loaded</div>}</div></aside>
       <section className={`viewport ${lightPlacementMode ? 'light-placement-active' : ''}`}><canvas ref={canvasRef}/>{!filename && <iframe className="brandExperienceFrame" src="/brand-experience.html" title="Interactive Mobica 3D brand experience" />}{filename && <div className="viewportBadge">BABYLON.JS · PBR RENDERER</div>}{filename && <>
         <button className={`studioLightingToggle ${studioLightingOpen ? 'active' : ''}`} onClick={() => setStudioLightingOpen(open => !open)} aria-expanded={studioLightingOpen}><SlidersHorizontal size={16}/> Lighting &amp; quality</button>
         {studioLightingOpen && <section className="studioLightingPanel" aria-label="Studio lighting and quality controls">
@@ -1896,7 +1951,7 @@ function EditorApp() {
           <div className="previewLightingFooter"><span>Higher quality uses more device resources.</span><button onClick={resetStudioLighting}>Reset</button></div>
         </section>}
       </>}{(filename || busy) && <div className="status">{busy ? 'Working… ' : ''}{status}</div>}</section>
-      <aside className="inspector"><div className="panelTitle"><Paintbrush size={16}/> Inspector</div>{selected != null && chosen() ? <><div className="selectedLabel">{selectedIds.size > 1 ? `${selectedIds.size} layers selected · editing primary: ${chosen()?.name}` : chosen()?.name}</div><div className="actions"><button className="btn" onClick={() => toggleSelectedVisibility(false)}><EyeOff size={15}/> Hide selected</button><button className="btn" onClick={() => toggleSelectedVisibility(true)}><Eye size={15}/> Show selected</button><button className="btn" onClick={selectAllLayersWithSelectedMaterial}><Layers size={15}/> Edit same material</button><button className="btn danger" onClick={remove}><Trash2 size={15}/> Delete</button></div>
+      <aside className="inspector"><div className="panelTitle"><Paintbrush size={16}/> Inspector</div>{selected === ENVIRONMENT_LAYER_ID && <div className="editorSection"><div className="editorSectionTitle">Environment color</div><p className="hint">Choose the background color surrounding the 3D model.</p><label className="field">Environment color<input aria-label="Environment color" type="color" value={environmentColor} onChange={event => updateEnvironmentColor(event.target.value)}/></label><div className="field"><button className="btn full" onClick={() => updateEnvironmentColor('#ffffff')}><RotateCcw size={14}/> Reset environment color</button></div></div>}{selected === FLOOR_LAYER_ID && <div className="editorSection"><div className="editorSectionTitle">Floor layer</div><p className="hint">This is a separate scene layer. Change its color, size or texture in the Floor layer controls below.</p></div>}{selected != null && chosen() ? <><div className="selectedLabel">{selectedIds.size > 1 ? `${selectedIds.size} layers selected · editing primary: ${chosen()?.name}` : chosen()?.name}</div><div className="actions"><button className="btn" onClick={() => toggleSelectedVisibility(false)}><EyeOff size={15}/> Hide selected</button><button className="btn" onClick={() => toggleSelectedVisibility(true)}><Eye size={15}/> Show selected</button><button className="btn" onClick={selectAllLayersWithSelectedMaterial}><Layers size={15}/> Edit same material</button><button className="btn danger" onClick={remove}><Trash2 size={15}/> Delete</button></div>
       <div className="editorSection"><div className="editorSectionTitle">Material</div><label className="field">Base color<input type="color" value={color} onChange={e => updateColor(e.target.value)}/></label><label className="field">Roughness <span>{roughness.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={roughness} onChange={e => updateRoughness(Number(e.target.value))}/></label><label className="field">Metallic <span>{metallic.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={metallic} onChange={e => updateMetallic(Number(e.target.value))}/></label><label className="field">Opacity <span>{Math.round(opacity * 100)}%</span><input type="range" min="0.1" max="1" step="0.01" value={opacity} onChange={e => updateOpacity(Number(e.target.value))}/></label><label className="btn full"><Upload size={15}/> Replace base-color texture<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateTexture(f); e.target.value = '' }}/></label><p className="hint">Texture placement uses the selected mesh's original UV coordinates.</p></div><div className="editorSection"><div className="editorSectionTitle"><Scissors size={14}/> Interactive mesh cut</div><p className="hint">Select the combined wall mesh, start drawing, then drag a line across the model from one edge to the opposite edge. The line defines the cutting plane from your current camera view.</p>{!cutDrawMode ? <button className="btn full" onClick={startDrawCut} disabled={!chosen()}><Scissors size={14}/> Draw cut on model</button> : <><div className="cutModeNotice">Cut mode active — drag across the selected mesh</div><button className="btn full" onClick={cancelDrawCut}><X size={14}/> Cancel cut</button></>}<p className="hint">Repeat on each new piece to separate all four walls. The cut creates two independently selectable mesh surfaces; it does not add closed caps.</p></div></> : <p className="hint">Select a layer or click any visible part of the model.</p>}
       <div className="separator"/><div className="panelTitle">Floor layer</div><p className="hint">Add a separate floor beneath the model. It stays independent from your GLB layers and materials.</p><label className="field"><span><input type="checkbox" checked={floorEnabled} onChange={e => updateFloor({ enabled: e.target.checked })}/> Show floor</span></label><label className="field">Floor color<input aria-label="Floor color" type="color" value={floorColor} onChange={e => updateFloor({ color: e.target.value })}/></label><label className="field">Floor size <span>{floorSize.toFixed(1)}×</span><input aria-label="Floor size" type="range" min="1" max="8" step="0.25" value={floorSize} onChange={e => updateFloor({ size: Number(e.target.value) })}/></label><label className="btn full"><Upload size={15}/> {floorTextureName ? 'Replace floor texture' : 'Add floor texture'}<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateFloor({ textureFile: f }); e.target.value = '' }}/></label>{floorTextureName && <p className="hint">Texture: {floorTextureName}</p>}<button className="btn full" onClick={() => { setFloorColor('#b8aa94'); setFloorSize(2.5); setFloorTextureName(''); const f = floorRef.current; if (f) { f.material.diffuseTexture?.dispose(); f.material.diffuseTexture = null; if (f.textureUrl) URL.revokeObjectURL(f.textureUrl); f.textureUrl = undefined; f.material.diffuseColor = Color3.FromHexString('#b8aa94') } updateFloor({ enabled: true, color: '#b8aa94', size: 2.5 }) }}><RotateCcw size={14}/> Reset floor</button><div className="separator"/><div className="panelTitle">Visual presets</div><p className="hint">Apply a complete look to every material in the loaded model. Original image textures and UVs are preserved.</p><div className="visualPresetGrid">{visualPresets.map(preset => <button key={preset.id} className={`visualPresetButton ${activePreset === preset.id ? 'active' : ''}`} onClick={() => applyVisualPreset(preset)}><span className={`presetSwatch preset-${preset.id}`}/><span>{preset.name}</span></button>)}</div><button className="btn full" onClick={resetVisualPreset}><RotateCcw size={14}/> Restore original materials</button><div className="separator"/><div className="panelTitle">Global material controls</div><label className="field">Color tint<input aria-label="Global material color" type="color" value={globalMaterialColor} onChange={e => { setGlobalMaterialColor(e.target.value); updateGlobalMaterialProperty('color', e.target.value) }}/></label><label className="field">Roughness <span>{globalRoughness.toFixed(2)}</span><input aria-label="Global roughness" type="range" min="0" max="1" step="0.01" value={globalRoughness} onChange={e => { const v = Number(e.target.value); setGlobalRoughness(v); updateGlobalMaterialProperty('roughness', v) }}/></label><label className="field">Metallic <span>{globalMetallic.toFixed(2)}</span><input aria-label="Global metallic" type="range" min="0" max="1" step="0.01" value={globalMetallic} onChange={e => { const v = Number(e.target.value); setGlobalMetallic(v); updateGlobalMaterialProperty('metallic', v) }}/></label><label className="field">Appearance material name<select aria-label="Material name for global texture" value={globalTextureMaterialName} onChange={e => setGlobalTextureMaterialName(e.target.value)}><option value="">Choose a material name…</option>{getAvailableOriginalMaterialNames().map(([key, displayName]) => <option key={key} value={key}>{displayName}</option>)}</select></label><label className="btn full"><Upload size={15}/> Upload texture for this material<input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={!globalTextureMaterialName} onChange={e => { const f = e.target.files?.[0]; if (f) updateGlobalTexture(f); e.target.value = '' }}/></label><p className="hint">Applies the texture only to meshes using the selected original GLB material name. Other materials remain unchanged. Each matching mesh keeps its UVs, opacity, roughness and metallic values.</p></aside></main>
     {materialDialogOpen && <div className="shareOverlay"><div className="shareDialog materialReplaceDialog"><button className="shareClose" onClick={() => setMaterialDialogOpen(false)}>×</button><div className="shareIcon"><Paintbrush size={22}/></div><h2>Replace material</h2><p>Choose a material from this model. The selected layers will use its color and texture maps, while each mesh keeps its own opacity, roughness and metallic values.</p><label className="field">New material<select value={replacementMaterialId} onChange={e => setReplacementMaterialId(e.target.value)}>{getAvailableModelMaterials().map(material => <option key={material.uniqueId} value={String(material.uniqueId)}>{material.name || `Material ${material.uniqueId}`}</option>)}</select></label><div className="shareActions"><button className="btn" onClick={() => setMaterialDialogOpen(false)}>Cancel</button><button className="btn primary" onClick={replaceMaterialsOnLayers} disabled={!replacementMaterialId}>Apply to {materialDialogLayerIds.length} layers</button></div></div></div>}
