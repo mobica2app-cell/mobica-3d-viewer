@@ -1870,7 +1870,7 @@ function EditorApp() {
       <button className="chevron" onClick={() => { setExpanded(prev => { const n = new Set(prev); n.has(item.id) ? n.delete(item.id) : n.add(item.id); return n }) }}>
         {hasChildren ? expanded.has(item.id) ? <ChevronDown size={14}/> : <ChevronRight size={14}/> : <span style={{width:14}}/>}
       </button>
-      <input className="layerSelectCheckbox" type="checkbox" aria-label={`Select ${item.name}`} checked={selectedIds.has(item.id)} onChange={e => toggleManualSelection(item.id, e.target.checked, e.ctrlKey || e.metaKey)} />
+      <input className="layerSelectCheckbox" type="checkbox" aria-label={`Select ${item.name}`} checked={selectedIds.has(item.id)} onChange={e => toggleManualSelection(item.id, e.target.checked)} />
       {renamingId === item.id
         ? <input className="layerRenameInput" autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onClick={e => e.stopPropagation()} onBlur={() => commitRename(item.id)} onKeyDown={e => { if (e.key === 'Enter') commitRename(item.id); if (e.key === 'Escape') setRenamingId(null) }} />
         : <button className="layerName" onClick={event => focusLayer(item.id, event.ctrlKey || event.metaKey)} title={`${item.name} · Click to select; hold Ctrl/Cmd to add or remove layers`}>{item.name}</button>}
