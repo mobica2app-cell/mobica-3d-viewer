@@ -8,6 +8,8 @@ create table if not exists public.model_shares (
   id uuid primary key,
   object_path text not null unique,
   filename text not null,
+  display_name text not null default 'Shared model',
+  metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   expires_at timestamptz not null
 );
@@ -44,3 +46,6 @@ revoke all on table public.model_shares from anon, authenticated;
 --     body := '{}'::jsonb
 --   ); $$
 -- );
+
+alter table public.model_shares add column if not exists display_name text not null default 'Shared model';
+alter table public.model_shares add column if not exists metadata jsonb not null default '{}'::jsonb;

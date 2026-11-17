@@ -10,6 +10,7 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 })
 const BUCKET = 'mobica-model-shares'
 const MAX_BYTES = 90 * 1024 * 1024
+const LINK_TTL_MS = 2 * 24 * 60 * 60 * 1000
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
@@ -23,9 +24,20 @@ Deno.serve(async (req) => {
       const form = await req.formData()
       const model = form.get('model')
       const originalName = String(form.get('filename') || 'model.glb').slice(0, 240)
+      const displayName = String(form.get('displayName') || '').trim().slice(0, 120)
+      const metadataRaw = String(form.get('metadata') || '{}')
       if (!(model instanceof File)) return json({ error: 'Missing GLB model file.' }, 400)
       if (model.size <= 0 || model.size > MAX_BYTES) return json({ error: 'Model must be between 1 byte and 90 MB.' }, 413)
       if (!model.name.toLowerCase().endsWith('.glb')) return json({ error: 'Only GLB files are supported.' }, 400)
+      if (!displayName) return json({ error: 'A model display name is required.' }, 400)
+      let metadata: Record<string, unknown>
+      try {
+        const parsed = JSON.parse(metadataRaw)
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Metadata must be an object.')
+        metadata = parsed as Record<string, unknown>
+      } catch {
+        return json({ error: 'Invalid share metadata.' }, 400)
+      }
 
       const id = crypto.randomUUID()
       const objectPath = `${id}.glb`
@@ -34,22 +46,23 @@ Deno.serve(async (req) => {
       })
       if (uploadError) throw uploadError
 
-      const expiresAt = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString()
+      const expiresAt = new Date(Date.now() + LINK_TTL_MS).toISOString()
       const { error: insertError } = await admin.from('model_shares').insert({
-        id, object_path: objectPath, filename: originalName, expires_at: expiresAt,
+        id, object_path: objectPath, filename: originalName, display_name: displayName,
+        metadata, expires_at: expiresAt,
       })
       if (insertError) {
         await admin.storage.from(BUCKET).remove([objectPath])
         throw insertError
       }
-      return json({ id, filename: originalName, expiresAt: new Date(expiresAt).getTime() })
+      return json({ id, filename: originalName, displayName, expiresAt: new Date(expiresAt).getTime() })
     }
 
     if (req.method === 'GET') {
       const id = url.searchParams.get('id')
       if (!id || !/^[0-9a-f-]{36}$/i.test(id)) return json({ error: 'Invalid share link.' }, 400)
       const { data: share, error } = await admin.from('model_shares')
-        .select('id, filename, object_path, expires_at').eq('id', id).maybeSingle()
+        .select('id, filename, display_name, metadata, object_path, expires_at').eq('id', id).maybeSingle()
       if (error) throw error
       if (!share) return json({ error: 'This share link does not exist.' }, 404)
       const expiresMs = new Date(share.expires_at).getTime()
@@ -62,7 +75,7 @@ Deno.serve(async (req) => {
       const { data: signed, error: signError } = await admin.storage.from(BUCKET)
         .createSignedUrl(share.object_path, remainingSeconds, { download: false })
       if (signError) throw signError
-      return json({ id: share.id, filename: share.filename, expiresAt: expiresMs, signedUrl: signed.signedUrl })
+      return json({ id: share.id, filename: share.filename, displayName: share.display_name || share.filename, metadata: share.metadata || {}, expiresAt: expiresMs, signedUrl: signed.signedUrl })
     }
     return json({ error: 'Method not allowed.' }, 405)
   } catch (error) {

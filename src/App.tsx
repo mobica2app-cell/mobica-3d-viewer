@@ -372,6 +372,8 @@ function EditorApp() {
   const cutLineRef = useRef<LinesMesh | null>(null)
   const performDrawCutRef = useRef<((mesh: Mesh, start: Vector3, end: Vector3) => void) | null>(null)
   const [shareUrl, setShareUrl] = useState('')
+  const [shareNameDialogOpen, setShareNameDialogOpen] = useState(false)
+  const [shareNameInput, setShareNameInput] = useState('')
   const [shareExpiry, setShareExpiry] = useState<number | null>(null)
   const [shareRemaining, setShareRemaining] = useState('')
   const [undoCount, setUndoCount] = useState(0)
@@ -1623,6 +1625,7 @@ function EditorApp() {
       childrenOf(node).forEach(walk)
     }
     model.roots.forEach(walk)
+    if (floorRef.current?.mesh) allowed.add(floorRef.current.mesh.uniqueId)
     const glb = await GLTF2Export.GLBAsync(ed.scene, name, {
       shouldExportNode: node => allowed.has(node.uniqueId) && (!(node instanceof AbstractMesh) || node.isEnabled()),
       meshCompressionMethod: 'Draco'
@@ -1816,48 +1819,102 @@ function EditorApp() {
     } finally { setBusy(false) }
   }
 
-  const createShareLink = async () => {
+  const createShareLink = async (displayName: string) => {
     const ed = editorRef.current
     const model = modelRef.current
+    const cleanName = displayName.trim().slice(0, 120)
     if (!ed || !model) { setStatus('Upload a model before creating a share link'); return }
+    if (!cleanName) { setStatus('Enter a name for this model'); return }
     const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
     const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
     if (!supabaseUrl || !supabaseKey) { setStatus('Configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env'); return }
-    setBusy(true); setStatus('Preparing two model versions for sharing…')
+
+    setBusy(true)
+    setStatus('Preparing one complete model for sharing…')
     const originalHidden = new Set(model.hiddenIds)
+    const originalFloorEnabled = floorRef.current?.mesh.isEnabled() ?? floorEnabled
+    const originalMeshEnabled = new Map<number, boolean>()
+    const allModelNodes = model.roots.flatMap(root => descendants(root))
+    for (const node of allModelNodes) {
+      if (node instanceof AbstractMesh) originalMeshEnabled.set(node.uniqueId, node.isEnabled())
+    }
     try {
-      // Version 1: all non-deleted layers, including layers currently hidden in the editor.
+      // Export one complete GLB. Hidden layers are temporarily enabled so customers
+      // can toggle them in Preview instead of requiring a second GLB file.
       model.hiddenIds.clear()
       applyModelState()
-      setStatus('Compressing full model with Draco…')
-      const fullBlob = await exportSceneBlob('mobica-full')
+      if (floorRef.current) floorRef.current.mesh.setEnabled(true)
+      setStatus('Compressing the complete model with Draco…')
+      const blob = await exportSceneBlob('mobica-shared-model')
 
-      // Version 2: only currently visible layers; deleted and hidden layers are omitted.
-      model.hiddenIds = new Set(originalHidden)
-      applyModelState()
-      setStatus('Compressing visible-only model with Draco…')
-      const visibleBlob = await exportSceneBlob('mobica-visible')
-
-      const upload = async (blob: Blob, suffix: string) => {
-        const form = new FormData()
-        const baseName = model.fileName.replace(/\.glb$/i, '')
-        form.append('model', blob, `${baseName}-${suffix}.glb`)
-        form.append('filename', `${baseName}-${suffix}.glb`)
-        const response = await fetch(`${supabaseUrl}/functions/v1/share-model`, {
-          method: 'POST', headers: { apikey: supabaseKey }, body: form
+      const rootsForMetadata = [...model.roots, ...(floorRef.current ? [floorRef.current.mesh] : [])]
+      const layers: Array<{ path: string; name: string; depth: number; hidden: boolean; isFloor?: boolean }> = []
+      const pathFor = (node: Node): string => {
+        const parts: string[] = []
+        let current: Node | null = node
+        while (current) {
+          const siblings = current.parent ? childrenOf(current.parent) : rootsForMetadata
+          parts.unshift(`${siblings.indexOf(current)}:${encodeURIComponent(current.name || '')}`)
+          current = current.parent
+        }
+        return parts.join('/')
+      }
+      const walkMetadata = (node: Node, depth: number) => {
+        if (model.deletedIds.has(node.uniqueId)) return
+        const explicitlyHidden = node === floorRef.current?.mesh
+          ? !floorEnabled
+          : originalHidden.has(node.uniqueId)
+        layers.push({
+          path: pathFor(node),
+          name: node === floorRef.current?.mesh ? 'Floor' : (node.name || `Layer ${node.uniqueId}`),
+          depth,
+          hidden: explicitlyHidden,
+          ...(node === floorRef.current?.mesh ? { isFloor: true } : {}),
         })
-        const data = await response.json()
-        if (!response.ok) throw new Error(data.error || `Share upload failed (${response.status})`)
-        return data
+        childrenOf(node).forEach(child => walkMetadata(child, depth + 1))
+      }
+      rootsForMetadata.forEach(root => walkMetadata(root, 0))
+      const scene = ed.scene
+      const metadata = {
+        version: 1,
+        displayName: cleanName,
+        backgroundColor: environmentColor,
+        layers,
+        lighting: {
+          exposure,
+          environment,
+          quality,
+          normalStrength,
+          autoCutaway,
+          studioLights,
+          hemiIntensity: scene.getLightByName('soft-fill')?.intensity ?? 0.38,
+          sunIntensity: scene.getLightByName('soft-key')?.intensity ?? 0.55,
+        },
+        floor: {
+          enabled: floorEnabled,
+          color: floorColor,
+          size: floorSize,
+          textureName: floorTextureName,
+        },
       }
 
-      setStatus('Uploading full model…')
-      const fullShare = await upload(fullBlob, 'full')
-      setStatus('Uploading visible-only model…')
-      const visibleShare = await upload(visibleBlob, 'visible')
-      const url = new URL(`/share/${visibleShare.id}?full=${encodeURIComponent(fullShare.id)}`, window.location.origin).toString()
-      const expiresAt = Math.min(Number(fullShare.expiresAt), Number(visibleShare.expiresAt))
-      setShareUrl(url); setShareExpiry(expiresAt); setStatus('Two-version share link created · expires in 3 days')
+      const form = new FormData()
+      const originalName = model.fileName || filename || 'model.glb'
+      form.append('model', blob, 'mobica-shared-model.glb')
+      form.append('filename', originalName)
+      form.append('displayName', cleanName)
+      form.append('metadata', JSON.stringify(metadata))
+      setStatus('Uploading the single model and its preview settings…')
+      const response = await fetch(`${supabaseUrl}/functions/v1/share-model`, {
+        method: 'POST', headers: { apikey: supabaseKey }, body: form
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || `Share upload failed (${response.status})`)
+      const url = new URL(`/share/${data.id}`, window.location.origin).toString()
+      const expiresAt = Number(data.expiresAt)
+      setShareUrl(url)
+      setShareExpiry(expiresAt)
+      setStatus('Share link created · expires in 2 days')
       try { await navigator.clipboard.writeText(url) } catch { /* user can copy from the dialog */ }
     } catch (err) {
       setStatus(`Share error: ${String(err)}`)
@@ -1865,6 +1922,13 @@ function EditorApp() {
     } finally {
       model.hiddenIds = originalHidden
       applyModelState()
+      for (const node of allModelNodes) {
+        if (node instanceof AbstractMesh && originalMeshEnabled.has(node.uniqueId)) {
+          // Restore the exact pre-share enabled state after the temporary full export.
+          node.setEnabled(originalMeshEnabled.get(node.uniqueId)!)
+        }
+      }
+      if (floorRef.current) floorRef.current.mesh.setEnabled(originalFloorEnabled)
       refresh()
       setBusy(false)
     }
@@ -1916,7 +1980,7 @@ function EditorApp() {
 
   return <div className="app">
     <header className="topbar"><div className="brand"><div><strong>MOBICA</strong><small>3D MATERIAL STUDIO</small></div></div>
-      <div className="toolbar"><button className="btn historyBtn" onClick={undo} disabled={!undoCount || busy} title="Undo (last 10 hide/delete actions)"><Undo2 size={15}/> Undo</button><button className="btn historyBtn" onClick={redo} disabled={!redoCount || busy} title="Redo"><Redo2 size={15}/> Redo</button><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><div className="exportDropdown"><div className="exportMainActions"><button className="btn primary" onClick={() => void exportModel('glb')} disabled={!filename || busy}><Download size={16}/> Download GLB</button><button className="btn exportChevron" aria-label="Show all export formats and sizes" title="Calculate all export sizes" onClick={() => { if (exportDropdownOpen) setExportDropdownOpen(false); else if (exportSizes) setExportDropdownOpen(true); else void prepareExportSizes() }} disabled={!filename || busy}><ChevronDown size={16}/></button></div>{exportDropdownOpen && <div className="exportDropdownMenu"><div className="exportDropdownTitle">Export formats <small>Compressed file sizes</small></div>{(['glb','gltf','obj','stl'] as const).map(format => <div className="exportDropdownRow" key={format}><div className="exportFormatInfo"><strong>{format.toUpperCase()}{format === 'glb' ? ' · Main' : ''}</strong><span>{exportSizes ? `${(exportSizes[format] / 1024 / 1024).toFixed(2)} MB` : 'Calculating…'}</span></div><button className="btn exportRowDownload" onClick={() => { setExportDropdownOpen(false); void exportModel(format) }} disabled={!exportSizes || busy}><Download size={14}/> Download</button></div>)}</div>}</div><button className="btn primary" onClick={createShareLink} disabled={!filename || busy}><Share2 size={16}/> Create 3-day link</button></div></header>
+      <div className="toolbar"><button className="btn historyBtn" onClick={undo} disabled={!undoCount || busy} title="Undo (last 10 hide/delete actions)"><Undo2 size={15}/> Undo</button><button className="btn historyBtn" onClick={redo} disabled={!redoCount || busy} title="Redo"><Redo2 size={15}/> Redo</button><label className="btn primary"><Upload size={16}/> Upload GLB<input type="file" accept=".glb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void load(f); e.target.value = '' }}/></label><div className="exportDropdown"><div className="exportMainActions"><button className="btn primary" onClick={() => void exportModel('glb')} disabled={!filename || busy}><Download size={16}/> Download GLB</button><button className="btn exportChevron" aria-label="Show all export formats and sizes" title="Calculate all export sizes" onClick={() => { if (exportDropdownOpen) setExportDropdownOpen(false); else if (exportSizes) setExportDropdownOpen(true); else void prepareExportSizes() }} disabled={!filename || busy}><ChevronDown size={16}/></button></div>{exportDropdownOpen && <div className="exportDropdownMenu"><div className="exportDropdownTitle">Export formats <small>Compressed file sizes</small></div>{(['glb','gltf','obj','stl'] as const).map(format => <div className="exportDropdownRow" key={format}><div className="exportFormatInfo"><strong>{format.toUpperCase()}{format === 'glb' ? ' · Main' : ''}</strong><span>{exportSizes ? `${(exportSizes[format] / 1024 / 1024).toFixed(2)} MB` : 'Calculating…'}</span></div><button className="btn exportRowDownload" onClick={() => { setExportDropdownOpen(false); void exportModel(format) }} disabled={!exportSizes || busy}><Download size={14}/> Download</button></div>)}</div>}</div><button className="btn primary" onClick={() => { setShareNameInput(filename.replace(/\.glb$/i, '')); setShareNameDialogOpen(true) }} disabled={!filename || busy}><Share2 size={16}/> Create 2-day link</button></div></header>
     <main className="layout"><aside className="sidebar"><div className="panelTitle"><Layers size={16}/> Scene layers <span>{items.length}</span></div><div className="layerBulk"><button className="btn" onClick={() => setAllVisible(true)} disabled={!items.length}><Eye size={14}/> Show all</button><button className="btn" onClick={() => toggleSelectedVisibility(false)} disabled={!selectedIds.size && highlightedIds.size < 2 && selected == null}><EyeOff size={14}/> Hide selected</button><button className="btn" onClick={() => { selectedIdsRef.current = new Set(); setSelectedIds(new Set()) }} disabled={!selectedIds.size}><X size={14}/> Unselect all</button></div><div className="layerMoveControls"><div className="movePicker"><input aria-label="Find destination layer" value={moveLayerQuery} onFocus={() => setMovePickerOpen(true)} onChange={e => { setMoveLayerQuery(e.target.value); setMovePickerOpen(true); setMoveTargetId('') }} placeholder={selectedIds.size ? `Find destination for ${selectedIds.size} selected…` : 'Select layers first'} disabled={!selectedIds.size}/>{moveTargetId && <button className="moveTargetClear" title="Clear destination" onClick={() => { setMoveTargetId(''); setMoveLayerQuery('') }}>×</button>}{movePickerOpen && selectedIds.size > 0 && <div className="movePickerResults">{items.filter(item => {
         if (selectedIds.has(item.id)) return false
         const node = editorRef.current?.nodes.get(item.id)
@@ -1968,23 +2032,32 @@ function EditorApp() {
       <div className="editorSection"><div className="editorSectionTitle">Material</div><label className="field">Base color<input type="color" value={color} onChange={e => updateColor(e.target.value)}/></label><label className="field">Roughness <span>{roughness.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={roughness} onChange={e => updateRoughness(Number(e.target.value))}/></label><label className="field">Metallic <span>{metallic.toFixed(2)}</span><input type="range" min="0" max="1" step="0.01" value={metallic} onChange={e => updateMetallic(Number(e.target.value))}/></label><label className="field">Opacity <span>{Math.round(opacity * 100)}%</span><input type="range" min="0.1" max="1" step="0.01" value={opacity} onChange={e => updateOpacity(Number(e.target.value))}/></label><label className="btn full"><Upload size={15}/> Replace base-color texture<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateTexture(f); e.target.value = '' }}/></label><p className="hint">Texture placement uses the selected mesh's original UV coordinates.</p></div><div className="editorSection"><div className="editorSectionTitle"><Scissors size={14}/> Interactive mesh cut</div><p className="hint">Select the combined wall mesh, start drawing, then drag a line across the model from one edge to the opposite edge. The line defines the cutting plane from your current camera view.</p>{!cutDrawMode ? <button className="btn full" onClick={startDrawCut} disabled={!chosen()}><Scissors size={14}/> Draw cut on model</button> : <><div className="cutModeNotice">Cut mode active — drag across the selected mesh</div><button className="btn full" onClick={cancelDrawCut}><X size={14}/> Cancel cut</button></>}<p className="hint">Repeat on each new piece to separate all four walls. The cut creates two independently selectable mesh surfaces; it does not add closed caps.</p></div></> : <p className="hint">Select a layer or click any visible part of the model.</p>}
       <div className="separator"/><div className="panelTitle">Floor layer</div><p className="hint">Add a separate floor beneath the model. It stays independent from your GLB layers and materials.</p><label className="field"><span><input type="checkbox" checked={floorEnabled} onChange={e => updateFloor({ enabled: e.target.checked })}/> Show floor</span></label><label className="field">Floor color<input aria-label="Floor color" type="color" value={floorColor} onChange={e => updateFloor({ color: e.target.value })}/></label><label className="field">Floor size <span>{floorSize.toFixed(1)}×</span><input aria-label="Floor size" type="range" min="1" max="8" step="0.25" value={floorSize} onChange={e => updateFloor({ size: Number(e.target.value) })}/></label><label className="btn full"><Upload size={15}/> {floorTextureName ? 'Replace floor texture' : 'Add floor texture'}<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateFloor({ textureFile: f }); e.target.value = '' }}/></label>{floorTextureName && <p className="hint">Texture: {floorTextureName}</p>}<button className="btn full" onClick={() => { setFloorColor('#b8aa94'); setFloorSize(2.5); setFloorTextureName(''); const f = floorRef.current; if (f) { f.material.diffuseTexture?.dispose(); f.material.diffuseTexture = null; if (f.textureUrl) URL.revokeObjectURL(f.textureUrl); f.textureUrl = undefined; f.material.diffuseColor = Color3.FromHexString('#b8aa94') } updateFloor({ enabled: true, color: '#b8aa94', size: 2.5 }) }}><RotateCcw size={14}/> Reset floor</button><div className="separator"/><div className="panelTitle">Visual presets</div><p className="hint">Apply a complete look to every material in the loaded model. Original image textures and UVs are preserved.</p><div className="visualPresetGrid">{visualPresets.map(preset => <button key={preset.id} className={`visualPresetButton ${activePreset === preset.id ? 'active' : ''}`} onClick={() => applyVisualPreset(preset)}><span className={`presetSwatch preset-${preset.id}`}/><span>{preset.name}</span></button>)}</div><button className="btn full" onClick={resetVisualPreset}><RotateCcw size={14}/> Restore original materials</button><div className="separator"/><div className="panelTitle">Global material controls</div><label className="field">Color tint<input aria-label="Global material color" type="color" value={globalMaterialColor} onChange={e => { setGlobalMaterialColor(e.target.value); updateGlobalMaterialProperty('color', e.target.value) }}/></label><label className="field">Roughness <span>{globalRoughness.toFixed(2)}</span><input aria-label="Global roughness" type="range" min="0" max="1" step="0.01" value={globalRoughness} onChange={e => { const v = Number(e.target.value); setGlobalRoughness(v); updateGlobalMaterialProperty('roughness', v) }}/></label><label className="field">Metallic <span>{globalMetallic.toFixed(2)}</span><input aria-label="Global metallic" type="range" min="0" max="1" step="0.01" value={globalMetallic} onChange={e => { const v = Number(e.target.value); setGlobalMetallic(v); updateGlobalMaterialProperty('metallic', v) }}/></label><label className="field">Appearance material name<select aria-label="Material name for global texture" value={globalTextureMaterialName} onChange={e => setGlobalTextureMaterialName(e.target.value)}><option value="">Choose a material name…</option>{getAvailableOriginalMaterialNames().map(([key, displayName]) => <option key={key} value={key}>{displayName}</option>)}</select></label><label className="btn full"><Upload size={15}/> Upload texture for this material<input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={!globalTextureMaterialName} onChange={e => { const f = e.target.files?.[0]; if (f) updateGlobalTexture(f); e.target.value = '' }}/></label><p className="hint">Applies the texture only to meshes using the selected original GLB material name. Other materials remain unchanged. Each matching mesh keeps its UVs, opacity, roughness and metallic values.</p></aside></main>
     {materialDialogOpen && <div className="shareOverlay"><div className="shareDialog materialReplaceDialog"><button className="shareClose" onClick={() => setMaterialDialogOpen(false)}>×</button><div className="shareIcon"><Paintbrush size={22}/></div><h2>Replace material</h2><p>Choose a material from this model. The selected layers will use its color and texture maps, while each mesh keeps its own opacity, roughness and metallic values.</p><label className="field">New material<select value={replacementMaterialId} onChange={e => setReplacementMaterialId(e.target.value)}>{getAvailableModelMaterials().map(material => <option key={material.uniqueId} value={String(material.uniqueId)}>{material.name || `Material ${material.uniqueId}`}</option>)}</select></label><div className="shareActions"><button className="btn" onClick={() => setMaterialDialogOpen(false)}>Cancel</button><button className="btn primary" onClick={replaceMaterialsOnLayers} disabled={!replacementMaterialId}>Apply to {materialDialogLayerIds.length} layers</button></div></div></div>}
-    {shareUrl && <div className="shareOverlay"><div className="shareDialog"><button className="shareClose" onClick={() => setShareUrl('')}>×</button><div className="shareIcon"><Share2 size={22}/></div><h2>Share model</h2><p>Two versions are included: the full model (with hidden layers restored, but deleted layers removed) and the visible-only model. Editing is disabled.</p><div className="shareUrl">{shareUrl}<button className="iconBtn" title="Copy link" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={16}/></button></div><div className="shareExpiry"><Clock size={15}/> Link expires in <strong>{shareRemaining || '3d 0h 0m 0s'}</strong></div><div className="shareActions"><button className="btn primary" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={15}/> Copy link</button><button className="btn" onClick={() => window.open(shareUrl, '_blank', 'noopener,noreferrer')}><ExternalLink size={15}/> Preview</button></div></div></div>}
+    {shareNameDialogOpen && <div className="shareOverlay"><div className="shareDialog"><button className="shareClose" onClick={() => setShareNameDialogOpen(false)}>×</button><div className="shareIcon"><Share2 size={22}/></div><h2>Name this model</h2><p>Choose the name customers will see on the shared Preview page.</p><label className="field">Model name<input autoFocus maxLength={120} value={shareNameInput} onChange={event => setShareNameInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && shareNameInput.trim() && !busy) { setShareNameDialogOpen(false); void createShareLink(shareNameInput) } }} placeholder="Enter model name"/></label><div className="shareActions"><button className="btn" onClick={() => setShareNameDialogOpen(false)} disabled={busy}>Cancel</button><button className="btn primary" onClick={() => { const name = shareNameInput.trim(); if (!name) return; setShareNameDialogOpen(false); void createShareLink(name) }} disabled={!shareNameInput.trim() || busy}>{busy ? 'Creating…' : 'Create 2-day link'}</button></div></div></div>}
+    {shareUrl && <div className="shareOverlay"><div className="shareDialog"><button className="shareClose" onClick={() => setShareUrl('')}>×</button><div className="shareIcon"><Share2 size={22}/></div><h2>Share model</h2><p>One complete model is stored with its layer visibility, background, floor, lighting and render-quality settings. Customers can show or hide layers in Preview. Editing is disabled.</p><div className="shareUrl">{shareUrl}<button className="iconBtn" title="Copy link" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={16}/></button></div><div className="shareExpiry"><Clock size={15}/> Link expires in <strong>{shareRemaining || '2d 0h 0m 0s'}</strong></div><div className="shareActions"><button className="btn primary" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={15}/> Copy link</button><button className="btn" onClick={() => window.open(shareUrl, '_blank', 'noopener,noreferrer')}><ExternalLink size={15}/> Preview</button></div></div></div>}
 
   </div>
 }
 
 
-type ShareInfo = { filename: string; expiresAt: number; visibleUrl: string; fullUrl: string }
-type SharedModelVariant = {
-  roots: Node[]
-  walls: CutawayWall[]
-  materials: Map<number, CutawayMaterial>
-  center: Vector3
-  size: Vector3
+type ShareLayerMetadata = { path: string; name: string; depth: number; hidden: boolean; isFloor?: boolean }
+type ShareMetadata = {
+  version?: number
+  displayName?: string
+  backgroundColor?: string
+  layers?: ShareLayerMetadata[]
+  lighting?: {
+    exposure?: number
+    environment?: number
+    quality?: number
+    normalStrength?: number
+    autoCutaway?: boolean
+    studioLights?: StudioLightData[]
+    hemiIntensity?: number
+    sunIntensity?: number
+  }
+  floor?: { enabled?: boolean; color?: string; size?: number; textureName?: string }
 }
-type SharedModelVariants = { visible: SharedModelVariant; all: SharedModelVariant }
-
-
+type ShareInfo = { filename: string; displayName: string; expiresAt: number; signedUrl: string; metadata: ShareMetadata }
 type PreviewSurfaceKind = 'fabric' | 'leather' | 'wood' | 'metal' | 'generic'
 
 function getPreviewSurfaceKind(mesh: AbstractMesh): PreviewSurfaceKind {
@@ -2100,25 +2173,27 @@ function enhanceSharedPreviewMaterials(roots: Node[], scene: Scene) {
   }
 }
 
-function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
+function SharedModelViewer({ id }: { id: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [info, setInfo] = useState<ShareInfo | null>(null)
   const [error, setError] = useState('')
   const [remaining, setRemaining] = useState('')
-  const [activeTab, setActiveTab] = useState<'visible' | 'all'>('visible')
-  const [viewerEntered, setViewerEntered] = useState(false)
   const [previewReady, setPreviewReady] = useState(false)
   const [previewProgress, setPreviewProgress] = useState('Preparing model preview…')
   const [lightingOpen, setLightingOpen] = useState(false)
+  const [layersOpen, setLayersOpen] = useState(true)
   const [previewNormalStrength, setPreviewNormalStrength] = useState(0.75)
   const [previewExposure, setPreviewExposure] = useState(1)
   const [previewEnvironment, setPreviewEnvironment] = useState(0.32)
   const [previewQuality, setPreviewQuality] = useState(75)
+  const [previewLayers, setPreviewLayers] = useState<ShareLayerMetadata[]>([])
+  const [backgroundColor, setBackgroundColor] = useState('#ffffff')
+  const [backgroundVisible, setBackgroundVisible] = useState(true)
   const cameraRef = useRef<ArcRotateCamera | null>(null)
   const overviewCameraRef = useRef<ArcRotateCamera | null>(null)
   const sharedEditorRef = useRef<Editor | null>(null)
   const sharedEngineRef = useRef<Engine | null>(null)
-  const sharedVariantsRef = useRef<SharedModelVariants | null>(null)
+  const nodeByPathRef = useRef<Map<string, Node>>(new Map())
 
   useEffect(() => {
     const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
@@ -2126,25 +2201,24 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     if (!supabaseUrl || !supabaseKey) { setError('This viewer is not configured.'); return }
     let cancelled = false
     setPreviewReady(false)
-    setViewerEntered(false)
     setError('')
-    setPreviewProgress('Checking share links…')
-    const fetchShare = async (shareId: string) => {
-      const response = await fetch(`${supabaseUrl}/functions/v1/share-model?id=${encodeURIComponent(shareId)}`, { headers: { apikey: supabaseKey } })
+    setPreviewProgress('Checking share link…')
+    fetch(`${supabaseUrl}/functions/v1/share-model?id=${encodeURIComponent(id)}`, {
+      headers: { apikey: supabaseKey },
+    }).then(async response => {
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'This share link is unavailable or has expired.')
-      return data
-    }
-    Promise.all([fetchShare(id), fetchShare(fullId || id)]).then(([visible, full]) => {
-      if (!cancelled) setInfo({
-        filename: visible.filename,
-        expiresAt: Math.min(Number(visible.expiresAt), Number(full.expiresAt)),
-        visibleUrl: visible.signedUrl,
-        fullUrl: full.signedUrl,
+      if (cancelled) return
+      setInfo({
+        filename: data.filename,
+        displayName: data.displayName || data.filename,
+        expiresAt: Number(data.expiresAt),
+        signedUrl: data.signedUrl,
+        metadata: data.metadata || {},
       })
     }).catch(err => { if (!cancelled) setError(String(err.message || err)) })
     return () => { cancelled = true }
-  }, [id, fullId])
+  }, [id])
 
   useEffect(() => {
     if (!info) return
@@ -2158,176 +2232,183 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
     return () => window.clearInterval(timer)
   }, [info])
 
-  // Both shared tabs use the same live camera-driven cutaway. They differ only
-  // in which exported model variant is enabled: visible excludes manually hidden
-  // layers, while all includes them.
   useEffect(() => {
     if (!info || !canvasRef.current) return
     const canvas = canvasRef.current
+    const settings = info.metadata.lighting || {}
     const engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true, adaptToDeviceRatio: true })
+    const initialQuality = Math.min(100, Math.max(25, settings.quality ?? 75))
+    engine.setHardwareScalingLevel(1.75 - (initialQuality / 100) * 1.25)
     sharedEngineRef.current = engine
-    engine.setHardwareScalingLevel(1.75 - (75 / 100) * 1.25)
+
     const scene = new Scene(engine)
-    scene.clearColor = new Color4(1, 1, 1, 1)
+    const initialBackground = /^#[0-9a-f]{6}$/i.test(info.metadata.backgroundColor || '')
+      ? info.metadata.backgroundColor!
+      : '#ffffff'
+    setBackgroundColor(initialBackground)
+    scene.clearColor = Color4.FromHexString(`${initialBackground}ff`)
     scene.useRightHandedSystem = true
     scene.imageProcessingConfiguration.toneMappingEnabled = false
-    scene.imageProcessingConfiguration.exposure = 1
+    const initialExposure = settings.exposure ?? 1
+    const initialEnvironment = settings.environment ?? 0.32
+    const initialNormalStrength = settings.normalStrength ?? 0.75
+    setPreviewExposure(initialExposure)
+    setPreviewEnvironment(initialEnvironment)
+    setPreviewNormalStrength(initialNormalStrength)
+    setPreviewQuality(initialQuality)
+    scene.imageProcessingConfiguration.exposure = initialExposure
     scene.imageProcessingConfiguration.contrast = 1
+
     const camera = new ArcRotateCamera('shared-camera', -Math.PI / 3, Math.PI / 2.7, 8, Vector3.Zero(), scene)
     camera.attachControl(canvas, false)
     configureCameraSensitivity(camera, isTouchViewport())
     camera.lowerRadiusLimit = 0.08
     camera.minZ = 0.01
     cameraRef.current = camera
-    // A second camera renders a compact, always-complete overview of the same
-    // active model. Its orientation is synchronized with the main camera.
+
     const overviewCamera = new ArcRotateCamera('shared-overview-camera', camera.alpha, camera.beta, 12, Vector3.Zero(), scene)
     overviewCamera.inputs.clear()
     overviewCamera.viewport = new Viewport(0.74, 0.68, 0.24, 0.28)
     overviewCamera.lowerRadiusLimit = 0.08
     overviewCamera.minZ = 0.01
     overviewCameraRef.current = overviewCamera
+
     const hemi = new HemisphericLight('soft-fill', new Vector3(0, 1, 0), scene)
-    hemi.intensity = 0.38
+    hemi.intensity = settings.hemiIntensity ?? 0.38
     const sun = new DirectionalLight('soft-key', new Vector3(-0.6, -1.5, -0.7), scene)
-    sun.intensity = 0.55
+    sun.intensity = settings.sunIntensity ?? 0.55
     scene.environmentTexture = CubeTexture.CreateFromPrefilteredData('https://assets.babylonjs.com/environments/environmentSpecular.env', scene)
-    scene.environmentIntensity = 0.32
+    scene.environmentIntensity = initialEnvironment
+
+    // Restore user-placed Studio lights from the share metadata.
+    for (const data of settings.studioLights || []) {
+      const light = new PointLight(`shared-studio-light-${data.id}`, new Vector3(data.x, data.y, data.z), scene)
+      light.diffuse = Color3.FromHexString(data.color || '#fff0d6')
+      light.specular = Color3.FromHexString(data.color || '#fff0d6')
+      light.intensity = data.enabled ? data.intensity : 0
+      light.range = data.range
+    }
+
     const highlight = new HighlightLayer('shared-selection', scene)
     const sharedEd: Editor = {
       scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [],
-      cutawayMaterials: new Map(), cutawayEnabled: true, activeCutawaySignature: '',
-      cutawayCenter: Vector3.Zero(), cutawaySize: Vector3.One()
+      cutawayMaterials: new Map(), cutawayEnabled: settings.autoCutaway ?? true,
+      activeCutawaySignature: '', cutawayCenter: Vector3.Zero(), cutawaySize: Vector3.One()
     }
     sharedEditorRef.current = sharedEd
-    sharedVariantsRef.current = null
-    // The overview camera temporarily restores the cached wall visibility for
-    // its render only. The main camera's cutaway is reapplied immediately after.
-    scene.onBeforeCameraRenderObservable.add(renderingCamera => {
-      if (renderingCamera !== overviewCamera) return
-      for (const wall of sharedEd.cutawayWalls) {
-        for (const mesh of wall.meshes) {
-          mesh.isVisible = cutawayBaseVisibility.get(mesh) ?? true
-        }
-      }
-    })
-    scene.onAfterCameraRenderObservable.add(renderingCamera => {
-      if (renderingCamera !== overviewCamera) return
-      sharedEd.activeCutawaySignature = ''
-      if (sharedEd.cutawayEnabled && sharedEd.cutawayWalls.length) {
-        updateAutomaticCutaway(sharedEd, sharedEd.cutawayCenter, sharedEd.cutawaySize)
-      }
-    })
-    const getOverviewRadius = (size: Vector3) => {
-      // Keep the previous desktop framing; only mobile uses the wider framing.
-      // ArcRotateCamera radius grows as the camera moves farther away.
-      // Keep the visible model at the exact same apparent size as before.
-      // The bounds below now use the full dimensions, so halve the old factor
-      // that was inadvertently applied to half-sized bounds.
-      return Math.max(size.length() * 0.675, 1)
-    }
 
     const updateOverviewViewport = () => {
       const canvasWidth = canvas.clientWidth
       const canvasHeight = canvas.clientHeight
       const isSmall = canvasWidth <= 600
-      // Match the Babylon camera viewport to the circle's inner area.
-      // The CSS circle is the outer frame; this inset is its even padding.
-      const diameter = isSmall
-        ? canvasWidth * 0.23
-        : Math.min(canvasWidth * 0.142, 190)
+      const diameter = isSmall ? canvasWidth * 0.23 : Math.min(canvasWidth * 0.142, 190)
       const padding = isSmall ? 8 : 10
       const innerDiameter = Math.max(diameter - padding * 2, 1)
-      // CSS right is relative to the container width, while CSS top is
-      // relative to its height. Keep the camera viewport on those exact axes.
       const edgeX = canvasWidth * 0.025
       const edgeY = canvasHeight * 0.025
       const left = canvasWidth - edgeX - diameter + padding
       const top = edgeY + padding
-      const width = innerDiameter / canvasWidth
-      const height = innerDiameter / canvasHeight
-      const x = left / canvasWidth
-      const y = 1 - (top + innerDiameter) / canvasHeight
-      overviewCamera.viewport = new Viewport(x, y, width, height)
+      overviewCamera.viewport = new Viewport(
+        left / canvasWidth,
+        1 - (top + innerDiameter) / canvasHeight,
+        innerDiameter / canvasWidth,
+        innerDiameter / canvasHeight
+      )
     }
     updateOverviewViewport()
+
     let disposed = false
-
-    const loadVariant = async (url: string) => {
-      await ensureDracoDecoderReady()
-      const result = await SceneLoader.ImportMeshAsync('', '', url, scene, undefined, '.glb')
-      const imported: Node[] = [...result.transformNodes, ...result.meshes]
-      const importedIds = new Set(imported.map(node => node.uniqueId))
-      const roots = imported.filter(node => !node.parent || !importedIds.has(node.parent.uniqueId))
-      const walls = collectCutawayWalls(roots)
-      const materials = new Map<number, CutawayMaterial>()
-      for (const wall of walls) {
-        for (const mesh of wall.meshes) {
-          if (!mesh.material) continue
-          const original = mesh.material
-          materials.set(mesh.uniqueId, { mesh, original, faded: original, baseAlpha: original.alpha })
-        }
-      }
-      const geometry = result.meshes.filter(mesh => mesh.getTotalVertices() > 0)
-      let min = new Vector3(Infinity, Infinity, Infinity)
-      let max = new Vector3(-Infinity, -Infinity, -Infinity)
-      for (const mesh of geometry) {
-        mesh.computeWorldMatrix(true)
-        const bounds = mesh.getBoundingInfo().boundingBox
-        min = Vector3.Minimize(min, bounds.minimumWorld)
-        max = Vector3.Maximize(max, bounds.maximumWorld)
-      }
-      // Calculate full dimensions before center; Vector3.add mutates min.
-      const size = geometry.length ? max.subtract(min) : Vector3.One()
-      const center = geometry.length ? min.add(max).scale(0.5) : Vector3.Zero()
-      return { roots, walls, materials, center, size }
-    }
-
-    const activateVariant = (variant: SharedModelVariant) => {
-      const variants = sharedVariantsRef.current
-      if (!variants) return
-      for (const root of [...variants.visible.roots, ...variants.all.roots]) root.setEnabled(false)
-      for (const root of variant.roots) root.setEnabled(true)
-      sharedEd.rootNodes = variant.roots
-      sharedEd.cutawayWalls = variant.walls
-      sharedEd.cutawayMaterials = variant.materials
-      sharedEd.cutawayCenter.copyFrom(variant.center)
-      sharedEd.cutawaySize.copyFrom(variant.size)
-      sharedEd.cutawayEnabled = true
-      sharedEd.activeCutawaySignature = ''
-    }
-
-    const loadModels = async () => {
+    const loadModel = async () => {
       try {
-        setPreviewReady(false)
-        setPreviewProgress('Loading both shared model versions…')
-        const [visible, all] = await Promise.all([
-          loadVariant(info.visibleUrl),
-          loadVariant(info.fullUrl)
-        ])
+        setPreviewProgress('Loading the shared model…')
+        await ensureDracoDecoderReady()
+        const result = await SceneLoader.ImportMeshAsync('', '', info.signedUrl, scene, undefined, '.glb')
         if (disposed) return
-        // Add preview-only procedural micro-normal detail (fabric weave, leather grain,
-        // wood grain and subtle metal texture). Original base-color maps stay intact.
-        enhanceSharedPreviewMaterials(visible.roots, scene)
-        enhanceSharedPreviewMaterials(all.roots, scene)
-        for (const texture of scene.textures) texture.anisotropicFilteringLevel = 12
-        sharedVariantsRef.current = { visible, all }
-        // A stale Cloudflare/Vite HTML cache can reference a hashed Babylon
-        // loader chunk that no longer exists after deployment. Clear the
-        // one-shot recovery marker after a successful model load.
-        try { sessionStorage.removeItem('mobica-shared-chunk-retry') } catch { /* storage may be unavailable */ }
-        camera.setTarget(visible.center)
-        camera.radius = Math.max(visible.size.length() * 0.75, 0.5)
+        const imported: Node[] = [...result.transformNodes, ...result.meshes]
+        const importedIds = new Set(imported.map(node => node.uniqueId))
+        const roots = imported.filter(node => !node.parent || !importedIds.has(node.parent.uniqueId))
+        const pathMap = new Map<string, Node>()
+        const pathFor = (node: Node, rootNodes: Node[]): string => {
+          const parts: string[] = []
+          let current: Node | null = node
+          while (current) {
+            const siblings = current.parent ? childrenOf(current.parent) : rootNodes
+            parts.unshift(`${siblings.indexOf(current)}:${encodeURIComponent(current.name || '')}`)
+            current = current.parent
+          }
+          return parts.join('/')
+        }
+        const layerMetadata = info.metadata.layers || []
+        const metadataByPath = new Map(layerMetadata.map(layer => [layer.path, layer]))
+        const loadedLayers: ShareLayerMetadata[] = []
+        const collectLayerTree = (node: Node, depth: number) => {
+          const path = pathFor(node, roots)
+          pathMap.set(path, node)
+          const saved = metadataByPath.get(path)
+            || layerMetadata.find(layer => layer.isFloor && node.name === 'viewer-floor-layer')
+            || layerMetadata.find(layer => layer.name === node.name)
+          const isFloor = saved?.isFloor || node.name === 'viewer-floor-layer'
+          loadedLayers.push({
+            path,
+            name: isFloor ? 'Floor' : (saved?.name || node.name || 'Layer'),
+            depth,
+            hidden: saved?.hidden ?? false,
+            ...(isFloor ? { isFloor: true } : {}),
+          })
+          childrenOf(node).forEach(child => collectLayerTree(child, depth + 1))
+        }
+        roots.forEach(root => collectLayerTree(root, 0))
+        nodeByPathRef.current = pathMap
+
+        // Reapply saved layer visibility after loading the single complete GLB.
+        for (const layer of loadedLayers) {
+          if (layer.hidden) {
+            const node = pathMap.get(layer.path)
+            if (node) setNodeVisible(node, false)
+          }
+        }
+        setPreviewLayers(loadedLayers)
+
+        const walls = collectCutawayWalls(roots)
+        const materials = new Map<number, CutawayMaterial>()
+        for (const wall of walls) {
+          for (const mesh of wall.meshes) {
+            if (!mesh.material) continue
+            materials.set(mesh.uniqueId, { mesh, original: mesh.material, faded: mesh.material, baseAlpha: mesh.material.alpha })
+          }
+        }
+        const geometry = result.meshes.filter(mesh => mesh.getTotalVertices() > 0 && mesh.name !== 'viewer-floor-layer')
+        let min = new Vector3(Infinity, Infinity, Infinity)
+        let max = new Vector3(-Infinity, -Infinity, -Infinity)
+        for (const mesh of geometry) {
+          mesh.computeWorldMatrix(true)
+          const bounds = mesh.getBoundingInfo().boundingBox
+          min = Vector3.Minimize(min, bounds.minimumWorld)
+          max = Vector3.Maximize(max, bounds.maximumWorld)
+        }
+        const size = geometry.length ? max.subtract(min) : Vector3.One()
+        const center = geometry.length ? min.add(max).scale(0.5) : Vector3.Zero()
+        enhanceSharedPreviewMaterials(roots, scene)
+        for (const texture of scene.textures) texture.anisotropicFilteringLevel = Math.max(1, Math.round((initialQuality / 100) * 16))
+        for (const material of scene.materials) {
+          if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = initialNormalStrength
+          else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = initialNormalStrength
+        }
+
+        sharedEd.rootNodes = roots
+        sharedEd.cutawayWalls = walls
+        sharedEd.cutawayMaterials = materials
+        sharedEd.cutawayCenter.copyFrom(center)
+        sharedEd.cutawaySize.copyFrom(size)
+        camera.setTarget(center)
+        camera.radius = Math.max(size.length() * 0.75, 0.5)
         camera.maxZ = Math.max(camera.radius * 100, 100)
-        overviewCamera.setTarget(visible.center)
-        overviewCamera.radius = getOverviewRadius(visible.size)
+        overviewCamera.setTarget(center)
+        overviewCamera.radius = Math.max(size.length() * 0.675, 1)
         overviewCamera.maxZ = Math.max(overviewCamera.radius * 100, 100)
         configureCameraSensitivity(camera, isTouchViewport())
-        // The choice screen uses fixed brand images from /public/images,
-        // shared by every model. Do not capture model-specific canvas thumbnails.
-        activateVariant(activeTab === 'all' ? all : visible)
-        const activeWalls = visible.walls
-        setPreviewProgress(activeWalls.length ? 'Studio cutaway ready' : 'Model loaded · no wall groups detected for automatic cutaway.')
+        try { sessionStorage.removeItem('mobica-shared-chunk-retry') } catch { /* storage may be unavailable */ }
+        setPreviewProgress(walls.length ? 'Model and saved settings ready' : 'Model loaded')
         setPreviewReady(true)
       } catch (err) {
         if (disposed) return
@@ -2337,8 +2418,6 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
           message.includes('Importing a module script failed') ||
           message.includes('ChunkLoadError')
         if (isDynamicChunkFailure) {
-          // Reload the latest app shell once. This recovers when the browser
-          // has cached an old index.html that points at a deleted hashed chunk.
           let alreadyRetried = false
           try {
             alreadyRetried = sessionStorage.getItem('mobica-shared-chunk-retry') === '1'
@@ -2350,14 +2429,14 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
             window.location.replace(url.toString())
             return
           }
-          setError('The shared viewer could not load a required 3D module. Please refresh the page or reopen the share link. If this keeps happening, the deployed asset cache needs to be refreshed.')
+          setError('The shared viewer could not load a required 3D module. Please refresh the page or reopen the share link.')
           return
         }
         setError(`Could not load shared model: ${message}`)
       }
     }
 
-    void loadModels()
+    void loadModel()
     engine.runRenderLoop(() => {
       overviewCamera.alpha = camera.alpha
       overviewCamera.beta = camera.beta
@@ -2372,94 +2451,115 @@ function SharedModelViewer({ id, fullId }: { id: string; fullId?: string }) {
       disposed = true
       sharedEditorRef.current = null
       sharedEngineRef.current = null
-      sharedVariantsRef.current = null
       cameraRef.current = null
       overviewCameraRef.current = null
+      nodeByPathRef.current.clear()
       window.removeEventListener('resize', resize)
       engine.dispose()
     }
   }, [info])
 
-  useEffect(() => {
-    const scene = sharedEditorRef.current?.scene
-    const mainCamera = cameraRef.current
-    const overviewCamera = overviewCameraRef.current
-    if (scene && mainCamera && overviewCamera) {
-      scene.activeCameras = viewerEntered ? [mainCamera, overviewCamera] : [mainCamera]
+  const setLayerVisibility = (path: string, visible: boolean) => {
+    const next = previewLayers.map(layer => layer.path === path ? { ...layer, hidden: !visible } : layer)
+    // Enable the model tree first, then apply all explicitly hidden branches.
+    for (const node of nodeByPathRef.current.values()) setNodeVisible(node, true)
+    for (const layer of next) {
+      if (layer.hidden) {
+        const node = nodeByPathRef.current.get(layer.path)
+        if (node) setNodeVisible(node, false)
+      }
     }
-  }, [viewerEntered, previewReady])
+    setPreviewLayers(next)
+  }
 
-  useEffect(() => {
-    const variants = sharedVariantsRef.current
-    const sharedEd = sharedEditorRef.current
-    const overviewCamera = overviewCameraRef.current
-    if (!variants || !sharedEd || !previewReady) return
-    const variant = activeTab === 'all' ? variants.all : variants.visible
-    for (const root of [...variants.visible.roots, ...variants.all.roots]) root.setEnabled(false)
-    for (const root of variant.roots) root.setEnabled(true)
-    sharedEd.rootNodes = variant.roots
-    sharedEd.cutawayWalls = variant.walls
-    sharedEd.cutawayMaterials = variant.materials
-    sharedEd.cutawayCenter.copyFrom(variant.center)
-    sharedEd.cutawaySize.copyFrom(variant.size)
-    sharedEd.cutawayEnabled = true
-    sharedEd.activeCutawaySignature = ''
-    if (overviewCamera) {
-      overviewCamera.setTarget(variant.center)
-      overviewCamera.radius = Math.max(variant.size.length() * (window.innerWidth <= 600 ? 1.35 : 1.35), 1)
-      overviewCamera.maxZ = Math.max(overviewCamera.radius * 100, 100)
+  const hasHiddenAncestor = (layer: ShareLayerMetadata) => {
+    let parentPath = layer.path
+    while (parentPath.includes('/')) {
+      parentPath = parentPath.slice(0, parentPath.lastIndexOf('/'))
+      if (previewLayers.some(candidate => candidate.path === parentPath && candidate.hidden)) return true
     }
-  }, [activeTab, previewReady])
+    return false
+  }
+
+  const updateBackground = (color: string, visible = backgroundVisible) => {
+    setBackgroundColor(color)
+    setBackgroundVisible(visible)
+    const scene = sharedEditorRef.current?.scene
+    if (scene) scene.clearColor = visible ? Color4.FromHexString(`${color}ff`) : new Color4(0, 0, 0, 0)
+  }
+
+  const updatePreviewQuality = (value: number) => {
+    setPreviewQuality(value)
+    const engine = sharedEngineRef.current
+    const scene = sharedEditorRef.current?.scene
+    if (engine && scene) {
+      engine.setHardwareScalingLevel(1.75 - (value / 100) * 1.25)
+      const anisotropy = Math.max(1, Math.round((value / 100) * 16))
+      for (const texture of scene.textures) texture.anisotropicFilteringLevel = anisotropy
+    }
+  }
 
   return <div className="sharedPage">
     <header className="sharedHeader">
       <div className="brand"><div><strong>MOBICA</strong><small>3D MODEL PREVIEW</small></div></div>
-      {viewerEntered && <div className="sharedTabs">
-        <button className={activeTab === 'visible' ? 'active' : ''} onClick={() => setActiveTab('visible')} disabled={!previewReady}>Inner division</button>
-        <button className={activeTab === 'all' ? 'active' : ''} onClick={() => setActiveTab('all')} disabled={!previewReady}>Outer division</button>
-      </div>}
       <div className="sharedMeta"><span><Clock size={14}/> {remaining || 'Checking expiry…'}</span><span className="readOnlyTag">READ ONLY</span></div>
     </header>
     <main className={`sharedViewport ${!previewReady ? 'previewLoading' : ''}`}>
       <canvas ref={canvasRef}/>
-      {previewReady && !viewerEntered && !error && <div className="previewChoiceOverlay">
-        <div className="previewChoiceHeading"><h1>Choose model view</h1><p>Inner division shows the model without manually hidden layers. Outer division includes all layers.</p></div>
-        <div className="previewChoiceGrid">
-          <button className="previewChoiceCard" onClick={() => { setActiveTab('visible'); setViewerEntered(true) }}>
-            <div className="previewChoiceImage previewChoiceImageInner"><img src="/images/opened-preview.jpg" alt="Inner division model preview" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><span className="previewChoiceTag">INNER DIVISION</span></div>
-            <strong>Inner division</strong><small>Without manually hidden layers</small>
-          </button>
-          <button className="previewChoiceCard" onClick={() => { setActiveTab('all'); setViewerEntered(true) }}>
-            <div className="previewChoiceImage previewChoiceImageOuter"><img src="/images/closed-preview.jpg" alt="Outer division model preview" onError={(event) => { event.currentTarget.style.visibility = 'hidden' }}/><span className="previewChoiceTag">OUTER DIVISION</span></div>
-            <strong>Outer division</strong><small>Includes all layers</small>
-          </button>
-        </div>
-      </div>}
       {!previewReady && !error && <div className="sharedMessage previewLoadingMessage"><div className="previewSpinner"/><h2>Preparing your 3D model</h2><p>{previewProgress}</p><small>Please wait while the shared model loads.</small></div>}
       {error && <div className="sharedMessage errorMessage"><h2>Link unavailable</h2><p>{error}</p></div>}
-      {previewReady && viewerEntered && !error && <>
-        <div className="sharedFileName">{info?.filename}</div>
+      {previewReady && !error && <>
+        <div className="sharedFileName">{info?.displayName || info?.filename}</div>
+        <button className={`previewLayersToggle ${layersOpen ? 'active' : ''}`} onClick={() => setLayersOpen(open => !open)} aria-expanded={layersOpen}><Layers size={16}/> Layers</button>
+        {layersOpen && <section className="previewLayersPanel" aria-label="Model layers">
+          <div className="previewLayersHeading"><strong>Scene layers</strong><small>Show or hide parts of the model</small></div>
+          <div className="previewLayerRow previewBackgroundRow">
+            <label><input type="checkbox" checked={backgroundVisible} onChange={event => updateBackground(backgroundColor, event.target.checked)}/> <span>Background</span></label>
+            <input type="color" aria-label="Background color" value={backgroundColor} onChange={event => updateBackground(event.target.value)}/>
+          </div>
+          {previewLayers.map(layer => {
+            const visible = !layer.hidden && !hasHiddenAncestor(layer)
+            return <div className={`previewLayerRow ${layer.isFloor ? 'previewFloorRow' : ''}`} key={layer.path} style={{ paddingLeft: 12 + layer.depth * 13 }}>
+              <label><input type="checkbox" checked={visible} disabled={hasHiddenAncestor(layer)} onChange={event => setLayerVisibility(layer.path, event.target.checked)}/> <span>{layer.name}</span></label>
+            </div>
+          })}
+        </section>}
         <button className={`previewLightingToggle ${lightingOpen ? 'active' : ''}`} onClick={() => setLightingOpen(open => !open)} aria-expanded={lightingOpen}>
-          <SlidersHorizontal size={16}/> Lighting & quality
+          <SlidersHorizontal size={16}/> Lighting &amp; quality
         </button>
         {lightingOpen && <section className="previewLightingPanel" aria-label="Lighting and quality controls">
           <div className="previewLightingPanelHeader">
-            <div><strong>Lighting & quality</strong><small>Customize how the design looks</small></div>
+            <div><strong>Lighting &amp; quality</strong><small>Saved Studio settings</small></div>
             <button className="previewLightingClose" onClick={() => setLightingOpen(false)} aria-label="Close lighting controls"><X size={16}/></button>
           </div>
           <label className="previewLightingField"><span><span>Brightness</span><b>{previewExposure.toFixed(2)}×</b></span><input type="range" min="0.35" max="1.8" step="0.05" value={previewExposure} onChange={event => { const value = Number(event.target.value); setPreviewExposure(value); const scene = sharedEditorRef.current?.scene; if (scene) scene.imageProcessingConfiguration.exposure = value }}/></label>
           <label className="previewLightingField"><span><span>Environment light</span><b>{previewEnvironment.toFixed(2)}</b></span><input type="range" min="0" max="1.2" step="0.02" value={previewEnvironment} onChange={event => { const value = Number(event.target.value); setPreviewEnvironment(value); const scene = sharedEditorRef.current?.scene; if (scene) scene.environmentIntensity = value }}/></label>
           <label className="previewLightingField"><span><span>Surface detail</span><b>{previewNormalStrength.toFixed(2)}</b></span><input type="range" min="0" max="2" step="0.05" value={previewNormalStrength} onChange={event => { const value = Number(event.target.value); setPreviewNormalStrength(value); const scene = sharedEditorRef.current?.scene; if (scene) for (const material of scene.materials) { if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = value; else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = value } }}/></label>
-          <label className="previewLightingField"><span><span>Render quality</span><b>{previewQuality}%</b></span><input type="range" min="25" max="100" step="5" value={previewQuality} onChange={event => { const value = Number(event.target.value); setPreviewQuality(value); const engine = sharedEngineRef.current; const scene = sharedEditorRef.current?.scene; if (engine && scene) { engine.setHardwareScalingLevel(1.75 - (value / 100) * 1.25); const anisotropy = Math.max(1, Math.round((value / 100) * 16)); for (const texture of scene.textures) texture.anisotropicFilteringLevel = anisotropy } }}/></label>
-          <div className="previewLightingFooter"><span>Higher quality uses more device resources.</span><button onClick={() => { setPreviewExposure(1); setPreviewEnvironment(0.32); setPreviewNormalStrength(0.75); setPreviewQuality(75); const scene = sharedEditorRef.current?.scene; const engine = sharedEngineRef.current; if (scene) { scene.imageProcessingConfiguration.exposure = 1; scene.environmentIntensity = 0.32; for (const material of scene.materials) { if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = 0.75; else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = 0.75 } } if (engine && scene) { engine.setHardwareScalingLevel(1.75 - (75 / 100) * 1.25); for (const texture of scene.textures) texture.anisotropicFilteringLevel = 12 } }}>Reset</button></div>
+          <label className="previewLightingField"><span><span>Render quality</span><b>{previewQuality}%</b></span><input type="range" min="25" max="100" step="5" value={previewQuality} onChange={event => updatePreviewQuality(Number(event.target.value))}/></label>
+          <div className="previewLightingFooter"><span>Higher quality uses more device resources.</span><button onClick={() => {
+            setPreviewExposure(info?.metadata.lighting?.exposure ?? 1)
+            setPreviewEnvironment(info?.metadata.lighting?.environment ?? 0.32)
+            setPreviewNormalStrength(info?.metadata.lighting?.normalStrength ?? 0.75)
+            updatePreviewQuality(info?.metadata.lighting?.quality ?? 75)
+            const scene = sharedEditorRef.current?.scene
+            if (scene) {
+              scene.imageProcessingConfiguration.exposure = info?.metadata.lighting?.exposure ?? 1
+              scene.environmentIntensity = info?.metadata.lighting?.environment ?? 0.32
+              for (const material of scene.materials) {
+                if (material instanceof PBRMaterial && material.bumpTexture) material.bumpTexture.level = info?.metadata.lighting?.normalStrength ?? 0.75
+                else if (material instanceof StandardMaterial && material.bumpTexture) material.bumpTexture.level = info?.metadata.lighting?.normalStrength ?? 0.75
+              }
+            }
+          }}>Reset</button></div>
         </section>}
-        <div className="overviewCircle" aria-hidden="true"/><div className="sharedHint"><span className="desktopHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</span><span className="mobileHint">Drag to rotate · Pinch to zoom</span></div></>}
+        <div className="overviewCircle" aria-hidden="true"/>
+        <div className="sharedHint"><span className="desktopHint">Drag to rotate · Scroll to zoom · Right-click drag to pan</span><span className="mobileHint">Drag to rotate · Pinch to zoom</span></div>
+      </>}
     </main>
   </div>
 }
 
 export default function App() {
   const match = window.location.pathname.match(/^\/share\/([^/]+)\/?$/)
-  const fullId = new URLSearchParams(window.location.search).get('full') || undefined
-  return match ? <SharedModelViewer id={decodeURIComponent(match[1])} fullId={fullId}/> : <EditorApp/>
+  return match ? <SharedModelViewer id={decodeURIComponent(match[1])}/> : <EditorApp/>
 }
