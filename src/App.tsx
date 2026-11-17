@@ -970,6 +970,27 @@ function EditorApp() {
       const imported = [...result.transformNodes, ...result.meshes]
       const ids = new Set(imported.map(n => n.uniqueId))
       const roots = imported.filter(n => !n.parent || !ids.has(n.parent.uniqueId))
+      // Fit the model more comfortably inside the viewer's circular presentation
+      // area: reduce it to 80% while keeping its overall center in the same place.
+      const MODEL_DISPLAY_SCALE = 0.8
+      const initialMeshes = result.meshes.filter(mesh => mesh.getTotalVertices() > 0)
+      if (initialMeshes.length) {
+        let initialMin = new Vector3(Infinity, Infinity, Infinity)
+        let initialMax = new Vector3(-Infinity, -Infinity, -Infinity)
+        for (const mesh of initialMeshes) {
+          mesh.computeWorldMatrix(true)
+          const bounds = mesh.getBoundingInfo().boundingBox
+          initialMin = Vector3.Minimize(initialMin, bounds.minimumWorld)
+          initialMax = Vector3.Maximize(initialMax, bounds.maximumWorld)
+        }
+        const modelCenter = initialMin.add(initialMax).scale(0.5)
+        for (const root of roots) {
+          root.computeWorldMatrix(true)
+          root.position.copyFrom(modelCenter.add(root.position.subtract(modelCenter).scale(MODEL_DISPLAY_SCALE)))
+          root.scaling.scaleInPlace(MODEL_DISPLAY_SCALE)
+          root.computeWorldMatrix(true)
+        }
+      }
       modelRef.current = { roots, fileName: file.name, hiddenIds: new Set(), deletedIds: new Set(), generatedIds: new Set(), activeGeneratedIds: new Set() }
       // Keep each imported mesh's original material as its stable identity. Editing
       // operations clone materials, so the live material name/reference can change.
@@ -1047,7 +1068,17 @@ function EditorApp() {
   const toggleSelectedVisibility = (visible: boolean) => {
     const ed = editorRef.current
     if (!ed || !modelRef.current) return
-    const ids = selectedIdsRef.current.size ? [...selectedIdsRef.current] : highlightedIdsRef.current.size > 1 ? [...highlightedIdsRef.current] : selected == null || selected < 0 ? [] : [selected]
+    // 3D Ctrl/Cmd selection is tracked in highlightedIdsRef, while the layer
+    // tree also tracks selectedIdsRef. Prefer whichever currently contains the
+    // full multi-selection; otherwise a stale single tree selection can mask it.
+    const treeSelection = selectedIdsRef.current
+    const sceneSelection = highlightedIdsRef.current
+    const activeSelection = sceneSelection.size > treeSelection.size ? sceneSelection : treeSelection
+    const ids = activeSelection.size > 1
+      ? [...activeSelection]
+      : selected == null || selected < 0
+        ? [...activeSelection]
+        : [selected]
     if (!ids.length) return
     pushHistory()
     ids.forEach(id => visible ? modelRef.current!.hiddenIds.delete(id) : modelRef.current!.hiddenIds.add(id))
