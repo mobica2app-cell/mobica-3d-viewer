@@ -8,7 +8,7 @@ create table if not exists public.model_shares (
   id uuid primary key,
   object_path text not null unique,
   filename text not null,
-  display_name text not null default 'Shared model',
+  display_name text not null default '',
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   expires_at timestamptz not null
@@ -47,5 +47,10 @@ revoke all on table public.model_shares from anon, authenticated;
 --   ); $$
 -- );
 
-alter table public.model_shares add column if not exists display_name text not null default 'Shared model';
-alter table public.model_shares add column if not exists metadata jsonb not null default '{}'::jsonb;
+-- Upgrade existing installations created before share metadata was added.
+alter table public.model_shares
+  add column if not exists display_name text not null default '',
+  add column if not exists metadata jsonb not null default '{}'::jsonb;
+update public.model_shares
+set display_name = regexp_replace(filename, '\.glb$', '', 'i')
+where coalesce(display_name, '') = '';

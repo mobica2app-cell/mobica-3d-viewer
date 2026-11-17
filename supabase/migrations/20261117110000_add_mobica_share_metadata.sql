@@ -1,7 +1,11 @@
--- Single-model Mobica share links with persisted Preview settings.
+-- Store the customer-facing model name and preview configuration with each single-model share.
 alter table public.model_shares
-  add column if not exists display_name text not null default 'Shared model',
+  add column if not exists display_name text not null default '',
   add column if not exists metadata jsonb not null default '{}'::jsonb;
+
+update public.model_shares
+set display_name = regexp_replace(filename, '\.glb$', '', 'i')
+where coalesce(display_name, '') = '';
 
 alter table public.model_shares
   alter column display_name set not null,

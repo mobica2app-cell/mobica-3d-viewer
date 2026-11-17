@@ -1,4 +1,4 @@
--- Mobica 3-day GLB sharing schema
+-- Mobica 2-day GLB sharing schema
 -- Matches the deployed share-model and cleanup-shares Edge Functions.
 
 -- 1) Share metadata. Only trusted Edge Functions (service role) should access this table.
