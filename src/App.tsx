@@ -378,6 +378,7 @@ function EditorApp() {
       ed.camera.beta = saved.beta
       ed.camera.radius = saved.radius
       ed.camera.setTarget(saved.target)
+      if (canvasRef.current) ed.camera.attachControl(canvasRef.current, true)
     }
     cutawayGroupStartViewRef.current = null
   }
@@ -402,14 +403,15 @@ function EditorApp() {
     cutawayGroupStartViewRef.current = {
       alpha: ed.camera.alpha, beta: ed.camera.beta, radius: ed.camera.radius, target: ed.camera.target.clone()
     }
+    ed.camera.detachControl()
     ed.camera.setTarget(ed.cutawayCenter)
     ed.camera.alpha = -Math.PI / 2
-    ed.camera.beta = 0.01
+    ed.camera.beta = 0.0001
     ed.camera.radius = Math.max(ed.cutawaySize.length() * 1.25, 1)
     cutawayGroupModeRef.current = true
     setCutawayGroupMode(true)
     setCutawayGroupCount(0)
-    setCutawayGroupStatus('Top view: drag to draw circle 1 of 4')
+    setCutawayGroupStatus('Top view locked: draw a freehand outline around group 1 of 4')
     setStatus('Cutaway groups: draw circle 1 of 4')
   }
 
@@ -454,99 +456,120 @@ function EditorApp() {
     const ed = editorRef.current
     if (!canvas || !ed || !cutawayGroupMode) return
     canvas.classList.add('cutawayDrawing')
-    let dragStart: Vector3 | null = null
-    let previewRing: Mesh | null = null
+    let drawing = false
+    let points: Vector3[] = []
+    let previewLine: Mesh | null = null
     const palette = ['#22c55e', '#38bdf8', '#f59e0b', '#c084fc']
-    const pointOnModelPlane = (event: PointerEvent) => {
+    const pointOnTopPlane = (event: PointerEvent) => {
       const rect = canvas.getBoundingClientRect()
       const engine = ed.scene.getEngine()
       const x = (event.clientX - rect.left) * engine.getRenderWidth() / Math.max(rect.width, 1)
       const y = (event.clientY - rect.top) * engine.getRenderHeight() / Math.max(rect.height, 1)
       const ray = ed.scene.createPickingRay(x, y, Matrix.Identity(), ed.camera)
-      if (Math.abs(ray.direction.y) < 1e-6) return null
+      if (Math.abs(ray.direction.y) < 1e-7) return null
       const distance = (ed.cutawayCenter.y - ray.origin.y) / ray.direction.y
       if (distance < 0) return null
-      return ray.origin.add(ray.direction.scale(distance))
+      const hit = ray.origin.add(ray.direction.scale(distance))
+      return new Vector3(hit.x, ed.cutawayCenter.y + 0.035, hit.z)
     }
-    const makeRing = (center: Vector3, radius: number, index: number) => {
-      const ring = MeshBuilder.CreateTorus(`mobica-cutaway-group-ring-${index + 1}`, {
-        diameter: 1, thickness: 0.018, tessellation: 96
-      }, ed.scene)
-      ring.rotation.x = Math.PI / 2
-      ring.position.copyFrom(center)
-      ring.position.y = ed.cutawayCenter.y + 0.025
-      ring.scaling.set(radius * 2, radius * 2, radius * 2)
-      const material = new StandardMaterial(`mobica-cutaway-group-ring-material-${index + 1}`, ed.scene)
-      material.emissiveColor = Color3.FromHexString(palette[index])
-      material.diffuseColor = Color3.FromHexString(palette[index])
-      material.disableLighting = true
-      ring.material = material
-      ring.isPickable = false
-      ring.doNotSerialize = true
-      return ring
+    const redrawPreview = (closed = false) => {
+      previewLine?.dispose(false, true)
+      if (points.length < 2) return
+      const linePoints = closed ? [...points, points[0]] : points
+      previewLine = MeshBuilder.CreateLines('mobica-cutaway-freehand-preview', { points: linePoints }, ed.scene)
+      previewLine.color = Color3.FromHexString(palette[cutawayGroupsRef.current.length])
+      previewLine.isPickable = false
+      previewLine.doNotSerialize = true
+    }
+    const isInsidePolygon = (x: number, z: number, polygon: Vector3[]) => {
+      let inside = false
+      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const xi = polygon[i].x, zi = polygon[i].z
+        const xj = polygon[j].x, zj = polygon[j].z
+        const crosses = (zi > z) !== (zj > z)
+        if (crosses && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside
+      }
+      return inside
     }
     const down = (event: PointerEvent) => {
       if (!cutawayGroupModeRef.current || event.button !== 0) return
-      const point = pointOnModelPlane(event)
+      const point = pointOnTopPlane(event)
       if (!point) return
       event.preventDefault()
       event.stopPropagation()
-      dragStart = point
-      previewRing?.dispose(false, true)
-      previewRing = makeRing(point, 0.01, cutawayGroupsRef.current.length)
-      cutawayGroupRingsRef.current.push(previewRing)
+      drawing = true
+      points = [point]
+      redrawPreview()
       canvas.setPointerCapture?.(event.pointerId)
     }
     const move = (event: PointerEvent) => {
-      if (!dragStart || !previewRing) return
-      const point = pointOnModelPlane(event)
+      if (!drawing) return
+      const point = pointOnTopPlane(event)
       if (!point) return
-      const radius = Math.hypot(point.x - dragStart.x, point.z - dragStart.z)
-      previewRing.scaling.set(Math.max(radius * 2, 0.02), Math.max(radius * 2, 0.02), Math.max(radius * 2, 0.02))
+      const previous = points[points.length - 1]
+      const minStep = Math.max(ed.cutawaySize.length() * 0.002, 0.008)
+      if (Vector3.Distance(previous, point) >= minStep) {
+        points.push(point)
+        redrawPreview()
+      }
+      event.preventDefault()
+      event.stopPropagation()
     }
     const up = (event: PointerEvent) => {
-      if (!dragStart || !previewRing) return
-      const point = pointOnModelPlane(event)
-      const start = dragStart
-      const ring = previewRing
-      dragStart = null
-      previewRing = null
-      const radius = point ? Math.hypot(point.x - start.x, point.z - start.z) : 0
-      if (radius < Math.max(ed.cutawaySize.length() * 0.015, 0.04)) {
-        ring.dispose(false, true)
-        cutawayGroupRingsRef.current = cutawayGroupRingsRef.current.filter(item => item !== ring)
-        setCutawayGroupStatus('Circle too small. Drag a larger circle around the group.')
+      if (!drawing) return
+      drawing = false
+      const finalPoint = pointOnTopPlane(event)
+      if (finalPoint && Vector3.Distance(points[points.length - 1], finalPoint) > 0.005) points.push(finalPoint)
+      if (points.length < 3) {
+        previewLine?.dispose(false, true)
+        previewLine = null
+        setCutawayGroupStatus('Outline too short. Draw a closed shape with at least three points.')
         return
       }
+      const polygon = points.map(point => new Vector3(point.x, ed.cutawayCenter.y, point.z))
+      const area = Math.abs(polygon.reduce((sum, point, index) => {
+        const next = polygon[(index + 1) % polygon.length]
+        return sum + point.x * next.z - next.x * point.z
+      }, 0)) / 2
+      if (area < Math.max(ed.cutawaySize.length() ** 2 * 0.0002, 0.002)) {
+        previewLine?.dispose(false, true)
+        previewLine = null
+        setCutawayGroupStatus('Outline is too small. Draw a wider shape around the group.')
+        return
+      }
+      redrawPreview(true)
       const alreadyAssigned = new Set(cutawayGroupsRef.current.flatMap(group => group.meshes.map(mesh => mesh.uniqueId)))
       const meshes = ed.rootNodes.flatMap(root => findMeshes(root)).filter(mesh => {
         if (mesh.getTotalVertices() === 0 || alreadyAssigned.has(mesh.uniqueId)) return false
         mesh.computeWorldMatrix(true)
         const bounds = mesh.getBoundingInfo().boundingBox
         const center = bounds.minimumWorld.add(bounds.maximumWorld).scale(0.5)
-        return Math.hypot(center.x - start.x, center.z - start.z) <= radius
+        return isInsidePolygon(center.x, center.z, polygon)
       })
       if (!meshes.length) {
-        ring.dispose(false, true)
-        cutawayGroupRingsRef.current = cutawayGroupRingsRef.current.filter(item => item !== ring)
-        setCutawayGroupStatus('No model parts found inside that circle. Draw it again around the parts.')
+        previewLine?.dispose(false, true)
+        previewLine = null
+        setCutawayGroupStatus('No model parts found inside that outline. Draw again around the parts.')
         return
       }
       for (const mesh of meshes) if (!cutawayBaseVisibility.has(mesh)) cutawayBaseVisibility.set(mesh, mesh.isVisible)
       const index = cutawayGroupsRef.current.length
+      const center = polygon.reduce((sum, point) => sum.addInPlace(point), Vector3.Zero()).scale(1 / polygon.length)
       const group: CutawayWall = {
-        name: `Circle Group ${index + 1}`,
+        name: `Freehand Group ${index + 1}`,
         root: meshes[0],
         meshes,
-        center: new Vector3(start.x, ed.cutawayCenter.y, start.z),
+        center: new Vector3(center.x, ed.cutawayCenter.y, center.z),
         direction: Vector3.Zero()
       }
       cutawayGroupsRef.current = [...cutawayGroupsRef.current, group]
       ed.cutawayGroups = cutawayGroupsRef.current
       ed.activeCutawaySignature = ''
+      if (previewLine) cutawayGroupRingsRef.current.push(previewLine)
+      previewLine = null
       setCutawayGroupCount(cutawayGroupsRef.current.length)
       if (cutawayGroupsRef.current.length < 4) {
-        setCutawayGroupStatus(`Group ${index + 1}: ${meshes.length} parts captured. Draw circle ${index + 2} of 4.`)
+        setCutawayGroupStatus(`Group ${index + 1}: ${meshes.length} parts captured. Draw freehand outline ${index + 2} of 4.`)
         setStatus(`Cutaway group ${index + 1}/4 created · ${meshes.length} parts`)
       } else {
         for (const wall of ed.cutawayWalls) for (const mesh of wall.meshes) {
@@ -559,9 +582,11 @@ function EditorApp() {
         cutawayGroupModeRef.current = false
         setCutawayGroupMode(false)
         restoreCutawayGroupCamera()
-        setCutawayGroupStatus('Four groups ready. Rotate the camera to test automatic cutaway.')
-        setStatus('Four circular cutaway groups created. Rotate the camera to test them.')
+        setCutawayGroupStatus('Four freehand groups ready. Rotate the camera to test automatic cutaway.')
+        setStatus('Four freehand cutaway groups created. Rotate the camera to test them.')
       }
+      event.preventDefault()
+      event.stopPropagation()
     }
     canvas.addEventListener('pointerdown', down, true)
     canvas.addEventListener('pointermove', move, true)
@@ -569,10 +594,7 @@ function EditorApp() {
     canvas.addEventListener('pointercancel', up, true)
     return () => {
       canvas.classList.remove('cutawayDrawing')
-      if (previewRing) {
-        previewRing.dispose(false, true)
-        cutawayGroupRingsRef.current = cutawayGroupRingsRef.current.filter(item => item !== previewRing)
-      }
+      previewLine?.dispose(false, true)
       canvas.removeEventListener('pointerdown', down, true)
       canvas.removeEventListener('pointermove', move, true)
       canvas.removeEventListener('pointerup', up, true)
@@ -2280,14 +2302,14 @@ function EditorApp() {
       })}{items.filter(item => !selectedIds.has(item.id)).length === 0 && <div className="movePickerEmpty">No valid destination layers</div>}</div>}</div><button className="btn" onClick={moveSelectedToLayer} disabled={!selectedIds.size || !moveTargetId}>Move here</button></div>
       <div className="cutawayControl"><label><input type="checkbox" checked={autoCutaway} onChange={e => setAutoCutaway(e.target.checked)} /> <span>Automatic room cutaway</span></label><small>Hides the camera-facing wall groups, or your four circle groups when configured, using the same 15° rotation rule.</small></div>
       <div className="cutawayGroupControl">
-        <div className="cutawayGroupHeading"><strong>Circle-based cutaway groups</strong><span>{cutawayGroupCount}/4</span></div>
-        <small>Draw four circles in top view. Every part whose center falls inside a circle joins that group. Camera rotation uses the same 15° wall-cutaway rule.</small>
+        <div className="cutawayGroupHeading"><strong>Freehand cutaway groups</strong><span>{cutawayGroupCount}/4</span></div>
+        <small>Draw four freehand outlines from a locked top view. Parts whose centers fall inside each outline join that group. Camera rotation uses the same 15° wall-cutaway rule.</small>
         <div className="cutawayGroupActions">
-          <button className="btn" onClick={startCutawayGroupDrawing} disabled={!modelRef.current || cutawayGroupMode}>{cutawayGroupCount ? 'Redraw 4 circles' : 'Draw 4 circles'}</button>
+          <button className="btn" onClick={startCutawayGroupDrawing} disabled={!modelRef.current || cutawayGroupMode}>{cutawayGroupCount ? 'Redraw 4 outlines' : 'Draw 4 outlines'}</button>
           {cutawayGroupMode && <button className="btn" onClick={cancelCutawayGroupDrawing}>Cancel drawing</button>}
           {cutawayGroupCount > 0 && !cutawayGroupMode && <button className="btn" onClick={resetCutawayGroups}>Clear groups</button>}
         </div>
-        <div className="cutawayGroupStatus">{cutawayGroupMode ? 'Top view active · drag on the model to draw each circle' : cutawayGroupStatus}</div>
+        <div className="cutawayGroupStatus">{cutawayGroupMode ? 'Top view locked · drag to trace each group outline' : cutawayGroupStatus}</div>
       </div>
       <div className="layerSearch">
         <Search size={15}/>
