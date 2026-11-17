@@ -458,7 +458,7 @@ function EditorApp() {
     canvas.classList.add('cutawayDrawing')
     let drawing = false
     let points: Vector3[] = []
-    let previewLine: Mesh | null = null
+    let previewLine: LinesMesh | null = null
     const palette = ['#22c55e', '#38bdf8', '#f59e0b', '#c084fc']
     const pointOnTopPlane = (event: PointerEvent) => {
       const rect = canvas.getBoundingClientRect()
