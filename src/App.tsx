@@ -47,7 +47,7 @@ type CutawayWall = { name: string; root: Node; meshes: AbstractMesh[]; center: V
 type CutawayMaterial = { mesh: AbstractMesh; original: Material; faded: Material; baseAlpha: number }
 type StudioLightData = { id: number; name: string; x: number; y: number; z: number; color: string; intensity: number; range: number; enabled: boolean }
 const cutawayBaseVisibility = new WeakMap<AbstractMesh, boolean>()
-type Editor = { scene: Scene; camera: ArcRotateCamera; highlight: HighlightLayer; nodes: Map<number, Node>; rootNodes: Node[]; cutawayWalls: CutawayWall[]; cutawayMaterials: Map<number, CutawayMaterial>; cutawayEnabled: boolean; activeCutawaySignature: string; cutawayCenter: Vector3; cutawaySize: Vector3 }
+type Editor = { scene: Scene; camera: ArcRotateCamera; highlight: HighlightLayer; nodes: Map<number, Node>; rootNodes: Node[]; cutawayWalls: CutawayWall[]; cutawayGroups: CutawayWall[]; cutawayMaterials: Map<number, CutawayMaterial>; cutawayEnabled: boolean; activeCutawaySignature: string; cutawayCenter: Vector3; cutawaySize: Vector3 }
 type ModelSnapshot = { hiddenIds: Set<number>; deletedIds: Set<number>; activeGeneratedIds: Set<number> }
 type VisualPreset = { id: string; name: string; color: string; roughness: number; normal: number; metallic: number; environment: number; brightness: number; hemi: number; sun: number }
 const visualPresets: VisualPreset[] = [
@@ -252,7 +252,8 @@ function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, _modelSize: Ve
     return value
   }
 
-  const positionedWalls = ed.cutawayWalls.map(wall => {
+  const activeGroups = ed.cutawayGroups.length === 4 ? ed.cutawayGroups : ed.cutawayWalls
+  const positionedWalls = activeGroups.map(wall => {
     const x = wall.center.x - modelCenter.x
     const z = wall.center.z - modelCenter.z
     return { wall, angle: Math.atan2(z, x) }
@@ -291,7 +292,7 @@ function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, _modelSize: Ve
 
   // Apply the visibility change to every cached mesh in the affected wall
   // groups in one update. No per-frame hierarchy traversal or transform edits.
-  for (const wall of ed.cutawayWalls) {
+  for (const wall of activeGroups) {
     const hideWall = hidden.has(wall)
     for (const mesh of wall.meshes) {
       const nextVisible = hideWall ? false : (cutawayBaseVisibility.get(mesh) ?? true)
@@ -359,8 +360,226 @@ function EditorApp() {
     if (!ed) return
     ed.cutawayEnabled = autoCutaway
     ed.activeCutawaySignature = ''
-    if (!autoCutaway) for (const wall of ed.cutawayWalls) for (const mesh of wall.meshes) { const visible = cutawayBaseVisibility.get(mesh) ?? true; if (mesh.isVisible !== visible) mesh.isVisible = visible }
+    if (!autoCutaway) for (const wall of [...ed.cutawayWalls, ...ed.cutawayGroups]) for (const mesh of wall.meshes) { const visible = cutawayBaseVisibility.get(mesh) ?? true; if (mesh.isVisible !== visible) mesh.isVisible = visible }
   }, [autoCutaway])
+  const [cutawayGroupMode, setCutawayGroupMode] = useState(false)
+  const [cutawayGroupCount, setCutawayGroupCount] = useState(0)
+  const [cutawayGroupStatus, setCutawayGroupStatus] = useState('Draw four circles around the parts you want grouped')
+  const cutawayGroupModeRef = useRef(false)
+  const cutawayGroupsRef = useRef<CutawayWall[]>([])
+  const cutawayGroupRingsRef = useRef<Mesh[]>([])
+  const cutawayGroupStartViewRef = useRef<{ alpha: number; beta: number; radius: number; target: Vector3 } | null>(null)
+
+  const restoreCutawayGroupCamera = () => {
+    const ed = editorRef.current
+    const saved = cutawayGroupStartViewRef.current
+    if (ed && saved) {
+      ed.camera.alpha = saved.alpha
+      ed.camera.beta = saved.beta
+      ed.camera.radius = saved.radius
+      ed.camera.setTarget(saved.target)
+    }
+    cutawayGroupStartViewRef.current = null
+  }
+
+  const startCutawayGroupDrawing = () => {
+    const ed = editorRef.current
+    if (!ed || !modelRef.current) return
+    for (const group of cutawayGroupsRef.current) for (const mesh of group.meshes) {
+      const visible = cutawayBaseVisibility.get(mesh) ?? true
+      if (mesh.isVisible !== visible) mesh.isVisible = visible
+    }
+    cutawayGroupRingsRef.current.forEach(ring => ring.dispose(false, true))
+    cutawayGroupRingsRef.current = []
+    cutawayGroupsRef.current = []
+    ed.cutawayGroups = []
+    ed.cutawayEnabled = false
+    ed.activeCutawaySignature = ''
+    for (const wall of ed.cutawayWalls) for (const mesh of wall.meshes) {
+      const visible = cutawayBaseVisibility.get(mesh) ?? true
+      if (mesh.isVisible !== visible) mesh.isVisible = visible
+    }
+    cutawayGroupStartViewRef.current = {
+      alpha: ed.camera.alpha, beta: ed.camera.beta, radius: ed.camera.radius, target: ed.camera.target.clone()
+    }
+    ed.camera.setTarget(ed.cutawayCenter)
+    ed.camera.alpha = -Math.PI / 2
+    ed.camera.beta = 0.01
+    ed.camera.radius = Math.max(ed.cutawaySize.length() * 1.25, 1)
+    cutawayGroupModeRef.current = true
+    setCutawayGroupMode(true)
+    setCutawayGroupCount(0)
+    setCutawayGroupStatus('Top view: drag to draw circle 1 of 4')
+    setStatus('Cutaway groups: draw circle 1 of 4')
+  }
+
+  const cancelCutawayGroupDrawing = () => {
+    cutawayGroupModeRef.current = false
+    setCutawayGroupMode(false)
+    restoreCutawayGroupCamera()
+    for (const ring of cutawayGroupRingsRef.current) ring.dispose(false, true)
+    cutawayGroupRingsRef.current = []
+    for (const group of cutawayGroupsRef.current) for (const mesh of group.meshes) {
+      const visible = cutawayBaseVisibility.get(mesh) ?? true
+      if (mesh.isVisible !== visible) mesh.isVisible = visible
+    }
+    cutawayGroupsRef.current = []
+    const ed = editorRef.current
+    if (ed) { ed.cutawayGroups = []; ed.cutawayEnabled = autoCutaway; ed.activeCutawaySignature = '' }
+    setCutawayGroupCount(0)
+    setCutawayGroupStatus('Drawing cancelled. Existing wall cutaway remains active.')
+    setStatus('Cutaway group drawing cancelled.')
+  }
+
+  const resetCutawayGroups = () => {
+    const ed = editorRef.current
+    cutawayGroupModeRef.current = false
+    setCutawayGroupMode(false)
+    restoreCutawayGroupCamera()
+    for (const ring of cutawayGroupRingsRef.current) ring.dispose(false, true)
+    cutawayGroupRingsRef.current = []
+    for (const group of cutawayGroupsRef.current) for (const mesh of group.meshes) {
+      const visible = cutawayBaseVisibility.get(mesh) ?? true
+      if (mesh.isVisible !== visible) mesh.isVisible = visible
+    }
+    cutawayGroupsRef.current = []
+    if (ed) { ed.cutawayGroups = []; ed.cutawayEnabled = autoCutaway; ed.activeCutawaySignature = '' }
+    setCutawayGroupCount(0)
+    setCutawayGroupStatus('Draw four circles around the parts you want grouped')
+    setStatus('Cutaway groups cleared. Existing wall cutaway is active.')
+  }
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const ed = editorRef.current
+    if (!canvas || !ed || !cutawayGroupMode) return
+    canvas.classList.add('cutawayDrawing')
+    let dragStart: Vector3 | null = null
+    let previewRing: Mesh | null = null
+    const palette = ['#22c55e', '#38bdf8', '#f59e0b', '#c084fc']
+    const pointOnModelPlane = (event: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect()
+      const engine = ed.scene.getEngine()
+      const x = (event.clientX - rect.left) * engine.getRenderWidth() / Math.max(rect.width, 1)
+      const y = (event.clientY - rect.top) * engine.getRenderHeight() / Math.max(rect.height, 1)
+      const ray = ed.scene.createPickingRay(x, y, Matrix.Identity(), ed.camera)
+      if (Math.abs(ray.direction.y) < 1e-6) return null
+      const distance = (ed.cutawayCenter.y - ray.origin.y) / ray.direction.y
+      if (distance < 0) return null
+      return ray.origin.add(ray.direction.scale(distance))
+    }
+    const makeRing = (center: Vector3, radius: number, index: number) => {
+      const ring = MeshBuilder.CreateTorus(`mobica-cutaway-group-ring-${index + 1}`, {
+        diameter: 1, thickness: 0.018, tessellation: 96
+      }, ed.scene)
+      ring.rotation.x = Math.PI / 2
+      ring.position.copyFrom(center)
+      ring.position.y = ed.cutawayCenter.y + 0.025
+      ring.scaling.set(radius * 2, radius * 2, radius * 2)
+      const material = new StandardMaterial(`mobica-cutaway-group-ring-material-${index + 1}`, ed.scene)
+      material.emissiveColor = Color3.FromHexString(palette[index])
+      material.diffuseColor = Color3.FromHexString(palette[index])
+      material.disableLighting = true
+      ring.material = material
+      ring.isPickable = false
+      ring.doNotSerialize = true
+      return ring
+    }
+    const down = (event: PointerEvent) => {
+      if (!cutawayGroupModeRef.current || event.button !== 0) return
+      const point = pointOnModelPlane(event)
+      if (!point) return
+      event.preventDefault()
+      event.stopPropagation()
+      dragStart = point
+      previewRing?.dispose(false, true)
+      previewRing = makeRing(point, 0.01, cutawayGroupsRef.current.length)
+      cutawayGroupRingsRef.current.push(previewRing)
+      canvas.setPointerCapture?.(event.pointerId)
+    }
+    const move = (event: PointerEvent) => {
+      if (!dragStart || !previewRing) return
+      const point = pointOnModelPlane(event)
+      if (!point) return
+      const radius = Math.hypot(point.x - dragStart.x, point.z - dragStart.z)
+      previewRing.scaling.set(Math.max(radius * 2, 0.02), Math.max(radius * 2, 0.02), Math.max(radius * 2, 0.02))
+    }
+    const up = (event: PointerEvent) => {
+      if (!dragStart || !previewRing) return
+      const point = pointOnModelPlane(event)
+      const start = dragStart
+      const ring = previewRing
+      dragStart = null
+      previewRing = null
+      const radius = point ? Math.hypot(point.x - start.x, point.z - start.z) : 0
+      if (radius < Math.max(ed.cutawaySize.length() * 0.015, 0.04)) {
+        ring.dispose(false, true)
+        cutawayGroupRingsRef.current = cutawayGroupRingsRef.current.filter(item => item !== ring)
+        setCutawayGroupStatus('Circle too small. Drag a larger circle around the group.')
+        return
+      }
+      const alreadyAssigned = new Set(cutawayGroupsRef.current.flatMap(group => group.meshes.map(mesh => mesh.uniqueId)))
+      const meshes = ed.rootNodes.flatMap(root => findMeshes(root)).filter(mesh => {
+        if (mesh.getTotalVertices() === 0 || alreadyAssigned.has(mesh.uniqueId)) return false
+        mesh.computeWorldMatrix(true)
+        const bounds = mesh.getBoundingInfo().boundingBox
+        const center = bounds.minimumWorld.add(bounds.maximumWorld).scale(0.5)
+        return Math.hypot(center.x - start.x, center.z - start.z) <= radius
+      })
+      if (!meshes.length) {
+        ring.dispose(false, true)
+        cutawayGroupRingsRef.current = cutawayGroupRingsRef.current.filter(item => item !== ring)
+        setCutawayGroupStatus('No model parts found inside that circle. Draw it again around the parts.')
+        return
+      }
+      for (const mesh of meshes) if (!cutawayBaseVisibility.has(mesh)) cutawayBaseVisibility.set(mesh, mesh.isVisible)
+      const index = cutawayGroupsRef.current.length
+      const group: CutawayWall = {
+        name: `Circle Group ${index + 1}`,
+        root: meshes[0],
+        meshes,
+        center: new Vector3(start.x, ed.cutawayCenter.y, start.z),
+        direction: Vector3.Zero()
+      }
+      cutawayGroupsRef.current = [...cutawayGroupsRef.current, group]
+      ed.cutawayGroups = cutawayGroupsRef.current
+      ed.activeCutawaySignature = ''
+      setCutawayGroupCount(cutawayGroupsRef.current.length)
+      if (cutawayGroupsRef.current.length < 4) {
+        setCutawayGroupStatus(`Group ${index + 1}: ${meshes.length} parts captured. Draw circle ${index + 2} of 4.`)
+        setStatus(`Cutaway group ${index + 1}/4 created · ${meshes.length} parts`)
+      } else {
+        for (const wall of ed.cutawayWalls) for (const mesh of wall.meshes) {
+          const visible = cutawayBaseVisibility.get(mesh) ?? true
+          if (mesh.isVisible !== visible) mesh.isVisible = visible
+        }
+        ed.cutawayEnabled = true
+        setAutoCutaway(true)
+        ed.activeCutawaySignature = ''
+        cutawayGroupModeRef.current = false
+        setCutawayGroupMode(false)
+        restoreCutawayGroupCamera()
+        setCutawayGroupStatus('Four groups ready. Rotate the camera to test automatic cutaway.')
+        setStatus('Four circular cutaway groups created. Rotate the camera to test them.')
+      }
+    }
+    canvas.addEventListener('pointerdown', down, true)
+    canvas.addEventListener('pointermove', move, true)
+    canvas.addEventListener('pointerup', up, true)
+    canvas.addEventListener('pointercancel', up, true)
+    return () => {
+      canvas.classList.remove('cutawayDrawing')
+      if (previewRing) {
+        previewRing.dispose(false, true)
+        cutawayGroupRingsRef.current = cutawayGroupRingsRef.current.filter(item => item !== previewRing)
+      }
+      canvas.removeEventListener('pointerdown', down, true)
+      canvas.removeEventListener('pointermove', move, true)
+      canvas.removeEventListener('pointerup', up, true)
+      canvas.removeEventListener('pointercancel', up, true)
+    }
+  }, [cutawayGroupMode])
+
   const [color, setColor] = useState('#ffffff')
   const [roughness, setRoughness] = useState(0.75)
   const [metallic, setMetallic] = useState(0)
@@ -797,7 +1016,7 @@ function EditorApp() {
     scene.environmentTexture = env
     scene.environmentIntensity = 0.32
     const highlight = new HighlightLayer('selection', scene)
-    const ed: Editor = { scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [], cutawayMaterials: new Map(), cutawayEnabled: true, activeCutawaySignature: '', cutawayCenter: Vector3.Zero(), cutawaySize: Vector3.One() }
+    const ed: Editor = { scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [], cutawayGroups: [], cutawayMaterials: new Map(), cutawayEnabled: true, activeCutawaySignature: '', cutawayCenter: Vector3.Zero(), cutawaySize: Vector3.One() }
     editorRef.current = ed
     scene.onPointerObservable.add(info => {
       if (cutDrawModeRef.current) {
@@ -884,7 +1103,7 @@ function EditorApp() {
       }
     })
     engine.runRenderLoop(() => {
-      if (ed.cutawayEnabled && ed.cutawayWalls.length) updateAutomaticCutaway(ed, ed.cutawayCenter, ed.cutawaySize)
+      if (ed.cutawayEnabled && (ed.cutawayGroups.length || ed.cutawayWalls.length)) updateAutomaticCutaway(ed, ed.cutawayCenter, ed.cutawaySize)
       scene.render()
     })
     const resize = () => engine.resize()
@@ -1014,6 +1233,15 @@ function EditorApp() {
       highlightedIdsRef.current = new Set()
       setHighlightedIds(new Set())
       setSelected(null)
+      restoreCutawayGroupCamera()
+      cutawayGroupModeRef.current = false
+      setCutawayGroupMode(false)
+      cutawayGroupRingsRef.current.forEach(ring => ring.dispose(false, true))
+      cutawayGroupRingsRef.current = []
+      cutawayGroupsRef.current = []
+      setCutawayGroupCount(0)
+      setCutawayGroupStatus('Draw four circles around the parts you want grouped')
+      ed.cutawayGroups = []
       ed.rootNodes = roots
       ed.cutawayWalls = collectCutawayWalls(roots)
       ed.cutawayMaterials.clear()
@@ -2050,7 +2278,17 @@ function EditorApp() {
         while (parentId != null) { const parentItem = items.find(candidate => candidate.id === parentId); if (parentItem) path.unshift(parentItem.name); parentId = parentItem?.parentId ?? null }
         return <button type="button" className={`movePickerOption ${moveTargetId === String(item.id) ? 'chosen' : ''}`} key={item.id} onClick={() => { setMoveTargetId(String(item.id)); setMoveLayerQuery(path.join(' / ')); setMovePickerOpen(false) }}><strong>{item.name}</strong><small>{path.join(' / ')}</small></button>
       })}{items.filter(item => !selectedIds.has(item.id)).length === 0 && <div className="movePickerEmpty">No valid destination layers</div>}</div>}</div><button className="btn" onClick={moveSelectedToLayer} disabled={!selectedIds.size || !moveTargetId}>Move here</button></div>
-      <div className="cutawayControl"><label><input type="checkbox" checked={autoCutaway} onChange={e => setAutoCutaway(e.target.checked)} /> <span>Automatic room cutaway</span></label><small>Hides the two camera-facing wall groups together with every nested mesh. Keep all objects that should disappear with a wall inside that wall group.</small></div>
+      <div className="cutawayControl"><label><input type="checkbox" checked={autoCutaway} onChange={e => setAutoCutaway(e.target.checked)} /> <span>Automatic room cutaway</span></label><small>Hides the camera-facing wall groups, or your four circle groups when configured, using the same 15° rotation rule.</small></div>
+      <div className="cutawayGroupControl">
+        <div className="cutawayGroupHeading"><strong>Circle-based cutaway groups</strong><span>{cutawayGroupCount}/4</span></div>
+        <small>Draw four circles in top view. Every part whose center falls inside a circle joins that group. Camera rotation uses the same 15° wall-cutaway rule.</small>
+        <div className="cutawayGroupActions">
+          <button className="btn" onClick={startCutawayGroupDrawing} disabled={!modelRef.current || cutawayGroupMode}>{cutawayGroupCount ? 'Redraw 4 circles' : 'Draw 4 circles'}</button>
+          {cutawayGroupMode && <button className="btn" onClick={cancelCutawayGroupDrawing}>Cancel drawing</button>}
+          {cutawayGroupCount > 0 && !cutawayGroupMode && <button className="btn" onClick={resetCutawayGroups}>Clear groups</button>}
+        </div>
+        <div className="cutawayGroupStatus">{cutawayGroupMode ? 'Top view active · drag on the model to draw each circle' : cutawayGroupStatus}</div>
+      </div>
       <div className="layerSearch">
         <Search size={15}/>
         <input aria-label="Search layers" type="search" value={layerSearch} onChange={e => setLayerSearch(e.target.value)} placeholder="Search layers…" />
@@ -2403,7 +2641,7 @@ function SharedModelViewer({ id }: { id: string }) {
 
     const highlight = new HighlightLayer('shared-selection', scene)
     const sharedEd: Editor = {
-      scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [],
+      scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [], cutawayGroups: [],
       cutawayMaterials: new Map(), cutawayEnabled: settings.autoCutaway ?? true,
       activeCutawaySignature: '', cutawayCenter: Vector3.Zero(), cutawaySize: Vector3.One()
     }

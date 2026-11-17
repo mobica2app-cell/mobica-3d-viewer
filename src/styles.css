@@ -323,3 +323,43 @@
 
 
 
+
+.cutawayGroupControl {
+  margin: 10px 0 14px;
+  padding: 12px;
+  border: 1px solid var(--border, #343a40);
+  border-radius: 10px;
+  background: var(--panel, rgba(255,255,255,.025));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cutawayGroupHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+.cutawayGroupHeading span {
+  color: var(--muted, #9ca3af);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.cutawayGroupControl > small {
+  color: var(--muted, #9ca3af);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.cutawayGroupActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.cutawayGroupStatus {
+  color: var(--muted, #9ca3af);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+canvas.cutawayDrawing { cursor: crosshair !important; touch-action: none; }
