@@ -1046,14 +1046,26 @@ function EditorApp() {
   }
   const toggleSelectedVisibility = (visible: boolean) => {
     const ed = editorRef.current
-    if (!ed) return
+    if (!ed || !modelRef.current) return
     const ids = selectedIdsRef.current.size ? [...selectedIdsRef.current] : highlightedIdsRef.current.size > 1 ? [...highlightedIdsRef.current] : selected == null || selected < 0 ? [] : [selected]
     if (!ids.length) return
     pushHistory()
-    ids.forEach(id => visible ? modelRef.current?.hiddenIds.delete(id) : modelRef.current?.hiddenIds.add(id))
+    ids.forEach(id => visible ? modelRef.current!.hiddenIds.delete(id) : modelRef.current!.hiddenIds.add(id))
     applyModelState()
     refresh()
-    select(selected)
+    // Preserve both the multi-selection and its highlight after the visibility action.
+    const stillSelected = new Set(ids.filter(id => ed.nodes.has(id)))
+    selectedIdsRef.current = stillSelected
+    setSelectedIds(stillSelected)
+    highlightedIdsRef.current = stillSelected
+    setHighlightedIds(stillSelected)
+    const primary = ids.length ? ids[ids.length - 1] : null
+    setSelected(primary)
+    ed.highlight.removeAllMeshes()
+    for (const id of stillSelected) {
+      const node = ed.nodes.get(id)
+      if (node) for (const mesh of findMeshes(node)) if (mesh instanceof Mesh && mesh.isEnabled()) ed.highlight.addMesh(mesh, new Color3(0.1, 0.75, 0.95))
+    }
   }
 
   const moveSelectedToLayer = () => {
@@ -1273,14 +1285,21 @@ function EditorApp() {
   }
   const toggleVisibility = (id: number) => {
     const node = editorRef.current?.nodes.get(id)
-    if (!node) return
     const model = modelRef.current
-    if (!model) return
+    if (!node || !model) return
+    // Clicking the eye on any selected row applies the action to the whole
+    // multi-selection; an unselected row still toggles only itself.
+    if (selectedIdsRef.current.size > 1 && selectedIdsRef.current.has(id)) {
+      const makeVisible = model.hiddenIds.has(id)
+      toggleSelectedVisibility(makeVisible)
+      return
+    }
     const next = model.hiddenIds.has(id)
     pushHistory()
     if (next) model.hiddenIds.delete(id); else model.hiddenIds.add(id)
     applyModelState()
-    refresh(); select(selected)
+    refresh()
+    select(id)
   }
   const deleteLayers = (ids: number[]) => {
     const model = modelRef.current
@@ -1865,13 +1884,29 @@ function EditorApp() {
         childrenOf(node).forEach(child => walkMetadata(child, depth + 1))
       }
       rootsForMetadata.forEach(root => walkMetadata(root, 0))
+      const isHiddenByStudio = (node: Node): boolean => {
+        let current: Node | null = node
+        while (current) {
+          if (originalHidden.has(current.uniqueId)) return true
+          current = current.parent
+        }
+        return false
+      }
+      // Mesh-level visibility survives GLB hierarchy/path normalization. A hidden
+      // parent is expanded into hidden mesh keys so the preview does not depend
+      // on Babylon reproducing the exact original node paths after export/import.
+      const hiddenMeshKeys = rootsForMetadata
+        .flatMap(root => descendants(root))
+        .filter((node): node is AbstractMesh => node instanceof AbstractMesh && isHiddenByStudio(node))
+        .map(mesh => `${mesh.name}|${mesh.getTotalVertices()}`)
 
       const metadata = {
-        version: 1,
+        version: 2,
         displayName: cleanName,
         backgroundColor: environmentColor,
         backgroundVisible: true,
         layers,
+        hiddenMeshKeys,
         lighting: {
           exposure,
           environment,
@@ -2021,7 +2056,7 @@ function EditorApp() {
       <div className="separator"/><div className="panelTitle">Floor layer</div><p className="hint">Add a separate floor beneath the model. It stays independent from your GLB layers and materials.</p><label className="field"><span><input type="checkbox" checked={floorEnabled} onChange={e => updateFloor({ enabled: e.target.checked })}/> Show floor</span></label><label className="field">Floor color<input aria-label="Floor color" type="color" value={floorColor} onChange={e => updateFloor({ color: e.target.value })}/></label><label className="field">Floor size <span>{floorSize.toFixed(1)}×</span><input aria-label="Floor size" type="range" min="1" max="8" step="0.25" value={floorSize} onChange={e => updateFloor({ size: Number(e.target.value) })}/></label><label className="btn full"><Upload size={15}/> {floorTextureName ? 'Replace floor texture' : 'Add floor texture'}<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) updateFloor({ textureFile: f }); e.target.value = '' }}/></label>{floorTextureName && <p className="hint">Texture: {floorTextureName}</p>}<button className="btn full" onClick={() => { setFloorColor('#b8aa94'); setFloorSize(2.5); setFloorTextureName(''); const f = floorRef.current; if (f) { f.material.diffuseTexture?.dispose(); f.material.diffuseTexture = null; if (f.textureUrl) URL.revokeObjectURL(f.textureUrl); f.textureUrl = undefined; f.material.diffuseColor = Color3.FromHexString('#b8aa94') } updateFloor({ enabled: true, color: '#b8aa94', size: 2.5 }) }}><RotateCcw size={14}/> Reset floor</button><div className="separator"/><div className="panelTitle">Visual presets</div><p className="hint">Apply a complete look to every material in the loaded model. Original image textures and UVs are preserved.</p><div className="visualPresetGrid">{visualPresets.map(preset => <button key={preset.id} className={`visualPresetButton ${activePreset === preset.id ? 'active' : ''}`} onClick={() => applyVisualPreset(preset)}><span className={`presetSwatch preset-${preset.id}`}/><span>{preset.name}</span></button>)}</div><button className="btn full" onClick={resetVisualPreset}><RotateCcw size={14}/> Restore original materials</button><div className="separator"/><div className="panelTitle">Global material controls</div><label className="field">Color tint<input aria-label="Global material color" type="color" value={globalMaterialColor} onChange={e => { setGlobalMaterialColor(e.target.value); updateGlobalMaterialProperty('color', e.target.value) }}/></label><label className="field">Roughness <span>{globalRoughness.toFixed(2)}</span><input aria-label="Global roughness" type="range" min="0" max="1" step="0.01" value={globalRoughness} onChange={e => { const v = Number(e.target.value); setGlobalRoughness(v); updateGlobalMaterialProperty('roughness', v) }}/></label><label className="field">Metallic <span>{globalMetallic.toFixed(2)}</span><input aria-label="Global metallic" type="range" min="0" max="1" step="0.01" value={globalMetallic} onChange={e => { const v = Number(e.target.value); setGlobalMetallic(v); updateGlobalMaterialProperty('metallic', v) }}/></label><label className="field">Appearance material name<select aria-label="Material name for global texture" value={globalTextureMaterialName} onChange={e => setGlobalTextureMaterialName(e.target.value)}><option value="">Choose a material name…</option>{getAvailableOriginalMaterialNames().map(([key, displayName]) => <option key={key} value={key}>{displayName}</option>)}</select></label><label className="btn full"><Upload size={15}/> Upload texture for this material<input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={!globalTextureMaterialName} onChange={e => { const f = e.target.files?.[0]; if (f) updateGlobalTexture(f); e.target.value = '' }}/></label><p className="hint">Applies the texture only to meshes using the selected original GLB material name. Other materials remain unchanged. Each matching mesh keeps its UVs, opacity, roughness and metallic values.</p></aside></main>
     {materialDialogOpen && <div className="shareOverlay"><div className="shareDialog materialReplaceDialog"><button className="shareClose" onClick={() => setMaterialDialogOpen(false)}>×</button><div className="shareIcon"><Paintbrush size={22}/></div><h2>Replace material</h2><p>Choose a material from this model. The selected layers will use its color and texture maps, while each mesh keeps its own opacity, roughness and metallic values.</p><label className="field">New material<select value={replacementMaterialId} onChange={e => setReplacementMaterialId(e.target.value)}>{getAvailableModelMaterials().map(material => <option key={material.uniqueId} value={String(material.uniqueId)}>{material.name || `Material ${material.uniqueId}`}</option>)}</select></label><div className="shareActions"><button className="btn" onClick={() => setMaterialDialogOpen(false)}>Cancel</button><button className="btn primary" onClick={replaceMaterialsOnLayers} disabled={!replacementMaterialId}>Apply to {materialDialogLayerIds.length} layers</button></div></div></div>}
     {shareNameDialogOpen && <div className="shareOverlay"><div className="shareDialog"><button className="shareClose" onClick={() => setShareNameDialogOpen(false)}>×</button><div className="shareIcon"><Share2 size={22}/></div><h2>Name this model</h2><p>Choose the name customers will see on the shared Preview page.</p><label className="field">Model name<input autoFocus maxLength={120} value={shareNameInput} onChange={event => setShareNameInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && shareNameInput.trim() && !busy) { setShareNameDialogOpen(false); void createShareLink(shareNameInput) } }} placeholder="Enter model name"/></label><div className="shareActions"><button className="btn" onClick={() => setShareNameDialogOpen(false)} disabled={busy}>Cancel</button><button className="btn primary" onClick={() => { const name = shareNameInput.trim(); if (!name) return; setShareNameDialogOpen(false); void createShareLink(name) }} disabled={!shareNameInput.trim() || busy}>{busy ? 'Creating…' : 'Create 2-day link'}</button></div></div></div>}
-    {shareUrl && <div className="shareOverlay"><div className="shareDialog"><button className="shareClose" onClick={() => setShareUrl('')}>×</button><div className="shareIcon"><Share2 size={22}/></div><h2>Share model</h2><p>One complete model is stored with its Inner View visibility, all layers, background, floor, lighting and render-quality settings. Customers can switch views and show or hide layers. This link expires after 2 days.</p><div className="shareUrl">{shareUrl}<button className="iconBtn" title="Copy link" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={16}/></button></div><div className="shareExpiry"><Clock size={15}/> Link expires in <strong>{shareRemaining || '2d 0h 0m 0s'}</strong></div><div className="shareActions"><button className="btn primary" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={15}/> Copy link</button><button className="btn" onClick={() => window.open(shareUrl, '_blank', 'noopener,noreferrer')}><ExternalLink size={15}/> Preview</button></div></div></div>}
+    {shareUrl && <div className="shareOverlay"><div className="shareDialog"><button className="shareClose" onClick={() => setShareUrl('')}>×</button><div className="shareIcon"><Share2 size={22}/></div><h2>Share model</h2><p>One complete model is stored with its Inner View visibility, all layers, background, floor, lighting and render-quality settings. Customers can switch between Inner View and All Layers. This link expires after 2 days.</p><div className="shareUrl">{shareUrl}<button className="iconBtn" title="Copy link" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={16}/></button></div><div className="shareExpiry"><Clock size={15}/> Link expires in <strong>{shareRemaining || '2d 0h 0m 0s'}</strong></div><div className="shareActions"><button className="btn primary" onClick={() => void navigator.clipboard.writeText(shareUrl)}><Copy size={15}/> Copy link</button><button className="btn" onClick={() => window.open(shareUrl, '_blank', 'noopener,noreferrer')}><ExternalLink size={15}/> Preview</button></div></div></div>}
 
   </div>
 }
@@ -2034,6 +2069,7 @@ type ShareMetadata = {
   backgroundColor?: string
   backgroundVisible?: boolean
   layers?: ShareLayerMetadata[]
+  hiddenMeshKeys?: string[]
   lighting?: {
     exposure?: number
     environment?: number
@@ -2173,7 +2209,6 @@ function SharedModelViewer({ id }: { id: string }) {
   const [previewReady, setPreviewReady] = useState(false)
   const [previewProgress, setPreviewProgress] = useState('Preparing model preview…')
   const [lightingOpen, setLightingOpen] = useState(false)
-  const [layersOpen, setLayersOpen] = useState(true)
   const [previewLayers, setPreviewLayers] = useState<ShareLayerMetadata[]>([])
   const [backgroundColor, setBackgroundColor] = useState('#ffffff')
   const [backgroundVisible, setBackgroundVisible] = useState(true)
@@ -2187,6 +2222,7 @@ function SharedModelViewer({ id }: { id: string }) {
   const sharedEngineRef = useRef<Engine | null>(null)
   const rootNodesRef = useRef<Node[]>([])
   const nodeByPathRef = useRef<Map<string, Node>>(new Map())
+  const innerHiddenPathsRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '')
@@ -2242,29 +2278,13 @@ function SharedModelViewer({ id }: { id: string }) {
     }
   }
 
-  const setLayerVisibility = (path: string, visible: boolean) => {
-    const next = previewLayers.map(layer => layer.path === path ? { ...layer, hidden: !visible } : layer)
-    setPreviewLayers(next)
-    applyLayerVisibility(next)
-  }
-
-  const hasHiddenAncestor = (layer: ShareLayerMetadata) => {
-    let parentPath = layer.path
-    while (parentPath.includes('/')) {
-      parentPath = parentPath.slice(0, parentPath.lastIndexOf('/'))
-      if (previewLayers.some(candidate => candidate.path === parentPath && candidate.hidden)) return true
-    }
-    return false
-  }
-
   const switchView = (tab: 'inner' | 'all') => {
     setActiveTab(tab)
     if (!info) return
-    const saved = new Map<string, boolean>()
-    for (const layer of info.metadata.layers || []) saved.set(layer.path, layer.hidden)
+    const saved = innerHiddenPathsRef.current
     const next = previewLayers.map(layer => ({
       ...layer,
-      hidden: tab === 'inner' ? (saved.get(layer.path) ?? false) : false,
+      hidden: tab === 'inner' ? saved.has(layer.path) : false,
     }))
     setPreviewLayers(next)
     applyLayerVisibility(next)
@@ -2407,17 +2427,22 @@ function SharedModelViewer({ id }: { id: string }) {
             || metadataLayers.find(layer => layer.isFloor && node.name === 'viewer-floor-layer')
             || metadataLayers.find(layer => layer.name === node.name)
           const isFloor = saved?.isFloor || node.name === 'viewer-floor-layer'
+          const meshKey = node instanceof AbstractMesh
+            ? `${node.name}|${node.getTotalVertices()}`
+            : ''
+          const hiddenByMeshKey = !!meshKey && (info.metadata.hiddenMeshKeys || []).includes(meshKey)
           loadedLayers.push({
             path,
             name: isFloor ? 'Floor' : (saved?.name || node.name || 'Layer'),
             depth,
-            hidden: saved?.hidden ?? false,
+            hidden: hiddenByMeshKey || (saved?.hidden ?? false),
             ...(isFloor ? { isFloor: true } : {}),
           })
           childrenOf(node).forEach(child => collectLayerTree(child, depth + 1))
         }
         roots.forEach(root => collectLayerTree(root, 0))
         nodeByPathRef.current = pathMap
+        innerHiddenPathsRef.current = new Set(loadedLayers.filter(layer => layer.hidden).map(layer => layer.path))
         setPreviewLayers(loadedLayers)
         applyLayerVisibility(loadedLayers)
 
@@ -2509,6 +2534,7 @@ function SharedModelViewer({ id }: { id: string }) {
       overviewCameraRef.current = null
       rootNodesRef.current = []
       nodeByPathRef.current.clear()
+      innerHiddenPathsRef.current.clear()
       window.removeEventListener('resize', resize)
       engine.dispose()
     }
@@ -2527,8 +2553,6 @@ function SharedModelViewer({ id }: { id: string }) {
     switchView(tab)
     setViewerEntered(true)
   }
-
-  const hasHiddenAncestorForRow = (layer: ShareLayerMetadata) => hasHiddenAncestor(layer)
 
   return <div className="sharedPage">
     <header className="sharedHeader">
@@ -2558,20 +2582,6 @@ function SharedModelViewer({ id }: { id: string }) {
       {error && <div className="sharedMessage errorMessage"><h2>Link unavailable</h2><p>{error}</p></div>}
       {previewReady && viewerEntered && !error && <>
         <div className="sharedFileName">{info?.displayName || info?.filename}</div>
-        <button className={`previewLayersToggle ${layersOpen ? 'active' : ''}`} onClick={() => setLayersOpen(open => !open)} aria-expanded={layersOpen}><Layers size={16}/> Layers</button>
-        {layersOpen && <section className="previewLayersPanel" aria-label="Model layers">
-          <div className="previewLayersHeading"><strong>Scene layers</strong><small>Show or hide parts of the model</small></div>
-          <div className="previewLayerRow previewBackgroundRow">
-            <label><input type="checkbox" checked={backgroundVisible} onChange={event => updateBackground(backgroundColor, event.target.checked)}/> <span>Background</span></label>
-            <input type="color" aria-label="Background color" value={backgroundColor} onChange={event => updateBackground(event.target.value)}/>
-          </div>
-          {previewLayers.map(layer => {
-            const visible = !layer.hidden && !hasHiddenAncestorForRow(layer)
-            return <div className={`previewLayerRow ${layer.isFloor ? 'previewFloorRow' : ''}`} key={layer.path} style={{ paddingLeft: 12 + layer.depth * 13 }}>
-              <label><input type="checkbox" checked={visible} disabled={hasHiddenAncestorForRow(layer)} onChange={event => setLayerVisibility(layer.path, event.target.checked)}/> <span>{layer.name}</span></label>
-            </div>
-          })}
-        </section>}
         <button className={`previewLightingToggle ${lightingOpen ? 'active' : ''}`} onClick={() => setLightingOpen(open => !open)} aria-expanded={lightingOpen}>
           <SlidersHorizontal size={16}/> Lighting &amp; quality
         </button>
