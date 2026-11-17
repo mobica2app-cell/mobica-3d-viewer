@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, PointLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh, Viewport, DynamicTexture, DefaultRenderingPipeline, ShadowGenerator, ImageProcessingConfiguration } from '@babylonjs/core'
+import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, PointLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh, Viewport, DynamicTexture, DefaultRenderingPipeline, ShadowGenerator, ImageProcessingConfiguration, BoundingBox } from '@babylonjs/core'
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader'
 import '@babylonjs/loaders/glTF'
 import { DracoDecoder } from '@babylonjs/core/Meshes/Compression/dracoDecoder'
@@ -364,7 +364,7 @@ function EditorApp() {
   }, [autoCutaway])
   const [cutawayGroupMode, setCutawayGroupMode] = useState(false)
   const [cutawayGroupCount, setCutawayGroupCount] = useState(0)
-  const [cutawayGroupStatus, setCutawayGroupStatus] = useState('Draw four circles around the parts you want grouped')
+  const [cutawayGroupStatus, setCutawayGroupStatus] = useState('Draw four freehand area outlines around the places you want grouped')
   const cutawayGroupModeRef = useRef(false)
   const cutawayGroupsRef = useRef<CutawayWall[]>([])
   const cutawayGroupRingsRef = useRef<Mesh[]>([])
@@ -447,7 +447,7 @@ function EditorApp() {
     cutawayGroupsRef.current = []
     if (ed) { ed.cutawayGroups = []; ed.cutawayEnabled = autoCutaway; ed.activeCutawaySignature = '' }
     setCutawayGroupCount(0)
-    setCutawayGroupStatus('Draw four circles around the parts you want grouped')
+    setCutawayGroupStatus('Draw four freehand area outlines around the places you want grouped')
     setStatus('Cutaway groups cleared. Existing wall cutaway is active.')
   }
 
@@ -490,6 +490,41 @@ function EditorApp() {
         if (crosses && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside
       }
       return inside
+    }
+    const segmentsIntersect = (a: Vector3, b: Vector3, c: Vector3, d: Vector3) => {
+      const orient = (p: Vector3, q: Vector3, r: Vector3) =>
+        (q.x - p.x) * (r.z - p.z) - (q.z - p.z) * (r.x - p.x)
+      const onSegment = (p: Vector3, q: Vector3, r: Vector3) =>
+        q.x >= Math.min(p.x, r.x) - 1e-7 && q.x <= Math.max(p.x, r.x) + 1e-7 &&
+        q.z >= Math.min(p.z, r.z) - 1e-7 && q.z <= Math.max(p.z, r.z) + 1e-7
+      const o1 = orient(a, b, c), o2 = orient(a, b, d)
+      const o3 = orient(c, d, a), o4 = orient(c, d, b)
+      if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) &&
+          ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0))) return true
+      return (Math.abs(o1) < 1e-7 && onSegment(a, c, b)) ||
+        (Math.abs(o2) < 1e-7 && onSegment(a, d, b)) ||
+        (Math.abs(o3) < 1e-7 && onSegment(c, a, d)) ||
+        (Math.abs(o4) < 1e-7 && onSegment(c, b, d))
+    }
+    // Treat the outline as a spatial region, not a point filter. A mesh is
+    // captured whenever its XZ world-space bounds overlap the drawn polygon.
+    // This includes nested child meshes and large parts crossing the outline.
+    const polygonOverlapsBounds = (bounds: BoundingBox, polygon: Vector3[]) => {
+      const min = bounds.minimumWorld
+      const max = bounds.maximumWorld
+      const corners = [
+        new Vector3(min.x, 0, min.z), new Vector3(max.x, 0, min.z),
+        new Vector3(max.x, 0, max.z), new Vector3(min.x, 0, max.z),
+      ]
+      if (corners.some(point => isInsidePolygon(point.x, point.z, polygon))) return true
+      if (polygon.some(point => point.x >= min.x && point.x <= max.x && point.z >= min.z && point.z <= max.z)) return true
+      for (let i = 0; i < polygon.length; i++) {
+        const a = polygon[i], b = polygon[(i + 1) % polygon.length]
+        for (let j = 0; j < corners.length; j++) {
+          if (segmentsIntersect(a, b, corners[j], corners[(j + 1) % corners.length])) return true
+        }
+      }
+      return false
     }
     const down = (event: PointerEvent) => {
       if (!cutawayGroupModeRef.current || event.button !== 0) return
@@ -543,13 +578,12 @@ function EditorApp() {
         if (mesh.getTotalVertices() === 0 || alreadyAssigned.has(mesh.uniqueId)) return false
         mesh.computeWorldMatrix(true)
         const bounds = mesh.getBoundingInfo().boundingBox
-        const center = bounds.minimumWorld.add(bounds.maximumWorld).scale(0.5)
-        return isInsidePolygon(center.x, center.z, polygon)
+        return polygonOverlapsBounds(bounds, polygon)
       })
       if (!meshes.length) {
         previewLine?.dispose(false, true)
         previewLine = null
-        setCutawayGroupStatus('No model parts found inside that outline. Draw again around the parts.')
+        setCutawayGroupStatus('No model parts overlap that area. Draw a wider outline around the place.')
         return
       }
       for (const mesh of meshes) if (!cutawayBaseVisibility.has(mesh)) cutawayBaseVisibility.set(mesh, mesh.isVisible)
@@ -569,7 +603,7 @@ function EditorApp() {
       previewLine = null
       setCutawayGroupCount(cutawayGroupsRef.current.length)
       if (cutawayGroupsRef.current.length < 4) {
-        setCutawayGroupStatus(`Group ${index + 1}: ${meshes.length} parts captured. Draw freehand outline ${index + 2} of 4.`)
+        setCutawayGroupStatus(`Area ${index + 1}: ${meshes.length} overlapping parts captured. Draw freehand outline ${index + 2} of 4.`)
         setStatus(`Cutaway group ${index + 1}/4 created · ${meshes.length} parts`)
       } else {
         for (const wall of ed.cutawayWalls) for (const mesh of wall.meshes) {
@@ -1262,7 +1296,7 @@ function EditorApp() {
       cutawayGroupRingsRef.current = []
       cutawayGroupsRef.current = []
       setCutawayGroupCount(0)
-      setCutawayGroupStatus('Draw four circles around the parts you want grouped')
+      setCutawayGroupStatus('Draw four freehand area outlines around the places you want grouped')
       ed.cutawayGroups = []
       ed.rootNodes = roots
       ed.cutawayWalls = collectCutawayWalls(roots)
@@ -2303,7 +2337,7 @@ function EditorApp() {
       <div className="cutawayControl"><label><input type="checkbox" checked={autoCutaway} onChange={e => setAutoCutaway(e.target.checked)} /> <span>Automatic room cutaway</span></label><small>Hides the camera-facing wall groups, or your four circle groups when configured, using the same 15° rotation rule.</small></div>
       <div className="cutawayGroupControl">
         <div className="cutawayGroupHeading"><strong>Freehand cutaway groups</strong><span>{cutawayGroupCount}/4</span></div>
-        <small>Draw four freehand outlines from a locked top view. Parts whose centers fall inside each outline join that group. Camera rotation uses the same 15° wall-cutaway rule.</small>
+        <small>Draw four freehand outlines from a locked top view. All nested parts whose world bounds overlap each outlined area join that group. Camera rotation uses the same 15° wall-cutaway rule.</small>
         <div className="cutawayGroupActions">
           <button className="btn" onClick={startCutawayGroupDrawing} disabled={!modelRef.current || cutawayGroupMode}>{cutawayGroupCount ? 'Redraw 4 outlines' : 'Draw 4 outlines'}</button>
           {cutawayGroupMode && <button className="btn" onClick={cancelCutawayGroupDrawing}>Cancel drawing</button>}
