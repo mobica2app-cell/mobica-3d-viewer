@@ -2514,7 +2514,7 @@ function SharedModelViewer({ id }: { id: string }) {
         camera.radius = Math.max(size.length() * 0.75, 0.5)
         camera.maxZ = Math.max(camera.radius * 100, 100)
         overviewCamera.setTarget(center)
-        overviewCamera.radius = Math.max(size.length() * 0.675, 1)
+        overviewCamera.radius = Math.max(size.length() * 0.675 * 1.2, 1)
         overviewCamera.maxZ = Math.max(overviewCamera.radius * 100, 100)
         configureCameraSensitivity(camera, isTouchViewport())
         try { sessionStorage.removeItem('mobica-shared-chunk-retry') } catch { /* storage may be unavailable */ }
