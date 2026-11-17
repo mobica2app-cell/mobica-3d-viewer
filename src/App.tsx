@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, PointLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh, Viewport, DynamicTexture, DefaultRenderingPipeline, ShadowGenerator, ImageProcessingConfiguration, BoundingBox } from '@babylonjs/core'
+import { Engine, Scene, ArcRotateCamera, Vector3, Quaternion, Color3, Color4, HemisphericLight, DirectionalLight, PointLight, CubeTexture, AbstractMesh, Mesh, TransformNode, VertexBuffer, VertexData, PBRMaterial, StandardMaterial, Texture, Material, HighlightLayer, BoundingInfo, Node, Matrix, PointerEventTypes, MeshBuilder, LinesMesh, Viewport, DynamicTexture, DefaultRenderingPipeline, ShadowGenerator, ImageProcessingConfiguration } from '@babylonjs/core'
 import { SceneLoader } from '@babylonjs/core/Loading/sceneLoader'
 import '@babylonjs/loaders/glTF'
 import { DracoDecoder } from '@babylonjs/core/Meshes/Compression/dracoDecoder'
@@ -47,7 +47,7 @@ type CutawayWall = { name: string; root: Node; meshes: AbstractMesh[]; center: V
 type CutawayMaterial = { mesh: AbstractMesh; original: Material; faded: Material; baseAlpha: number }
 type StudioLightData = { id: number; name: string; x: number; y: number; z: number; color: string; intensity: number; range: number; enabled: boolean }
 const cutawayBaseVisibility = new WeakMap<AbstractMesh, boolean>()
-type Editor = { scene: Scene; camera: ArcRotateCamera; highlight: HighlightLayer; nodes: Map<number, Node>; rootNodes: Node[]; cutawayWalls: CutawayWall[]; cutawayGroups: CutawayWall[]; cutawayMaterials: Map<number, CutawayMaterial>; cutawayEnabled: boolean; activeCutawaySignature: string; cutawayCenter: Vector3; cutawaySize: Vector3 }
+type Editor = { scene: Scene; camera: ArcRotateCamera; highlight: HighlightLayer; nodes: Map<number, Node>; rootNodes: Node[]; cutawayWalls: CutawayWall[]; cutawayMaterials: Map<number, CutawayMaterial>; cutawayEnabled: boolean; activeCutawaySignature: string; cutawayCenter: Vector3; cutawaySize: Vector3 }
 type ModelSnapshot = { hiddenIds: Set<number>; deletedIds: Set<number>; activeGeneratedIds: Set<number> }
 type VisualPreset = { id: string; name: string; color: string; roughness: number; normal: number; metallic: number; environment: number; brightness: number; hemi: number; sun: number }
 const visualPresets: VisualPreset[] = [
@@ -252,8 +252,7 @@ function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, _modelSize: Ve
     return value
   }
 
-  const activeGroups = ed.cutawayGroups.length === 4 ? ed.cutawayGroups : ed.cutawayWalls
-  const positionedWalls = activeGroups.map(wall => {
+  const positionedWalls = ed.cutawayWalls.map(wall => {
     const x = wall.center.x - modelCenter.x
     const z = wall.center.z - modelCenter.z
     return { wall, angle: Math.atan2(z, x) }
@@ -292,7 +291,7 @@ function updateAutomaticCutaway(ed: Editor, modelCenter: Vector3, _modelSize: Ve
 
   // Apply the visibility change to every cached mesh in the affected wall
   // groups in one update. No per-frame hierarchy traversal or transform edits.
-  for (const wall of activeGroups) {
+  for (const wall of ed.cutawayWalls) {
     const hideWall = hidden.has(wall)
     for (const mesh of wall.meshes) {
       const nextVisible = hideWall ? false : (cutawayBaseVisibility.get(mesh) ?? true)
@@ -360,282 +359,8 @@ function EditorApp() {
     if (!ed) return
     ed.cutawayEnabled = autoCutaway
     ed.activeCutawaySignature = ''
-    if (!autoCutaway) for (const wall of [...ed.cutawayWalls, ...ed.cutawayGroups]) for (const mesh of wall.meshes) { const visible = cutawayBaseVisibility.get(mesh) ?? true; if (mesh.isVisible !== visible) mesh.isVisible = visible }
+    if (!autoCutaway) for (const wall of ed.cutawayWalls) for (const mesh of wall.meshes) { const visible = cutawayBaseVisibility.get(mesh) ?? true; if (mesh.isVisible !== visible) mesh.isVisible = visible }
   }, [autoCutaway])
-  const [cutawayGroupMode, setCutawayGroupMode] = useState(false)
-  const [cutawayGroupCount, setCutawayGroupCount] = useState(0)
-  const [cutawayGroupStatus, setCutawayGroupStatus] = useState('Draw four freehand area outlines around the places you want grouped')
-  const cutawayGroupModeRef = useRef(false)
-  const cutawayGroupsRef = useRef<CutawayWall[]>([])
-  const cutawayGroupRingsRef = useRef<Mesh[]>([])
-  const cutawayGroupStartViewRef = useRef<{ alpha: number; beta: number; radius: number; target: Vector3 } | null>(null)
-
-  const restoreCutawayGroupCamera = () => {
-    const ed = editorRef.current
-    const saved = cutawayGroupStartViewRef.current
-    if (ed && saved) {
-      ed.camera.alpha = saved.alpha
-      ed.camera.beta = saved.beta
-      ed.camera.radius = saved.radius
-      ed.camera.setTarget(saved.target)
-      if (canvasRef.current) ed.camera.attachControl(canvasRef.current, true)
-    }
-    cutawayGroupStartViewRef.current = null
-  }
-
-  const startCutawayGroupDrawing = () => {
-    const ed = editorRef.current
-    if (!ed || !modelRef.current) return
-    for (const group of cutawayGroupsRef.current) for (const mesh of group.meshes) {
-      const visible = cutawayBaseVisibility.get(mesh) ?? true
-      if (mesh.isVisible !== visible) mesh.isVisible = visible
-    }
-    cutawayGroupRingsRef.current.forEach(ring => ring.dispose(false, true))
-    cutawayGroupRingsRef.current = []
-    cutawayGroupsRef.current = []
-    ed.cutawayGroups = []
-    ed.cutawayEnabled = false
-    ed.activeCutawaySignature = ''
-    for (const wall of ed.cutawayWalls) for (const mesh of wall.meshes) {
-      const visible = cutawayBaseVisibility.get(mesh) ?? true
-      if (mesh.isVisible !== visible) mesh.isVisible = visible
-    }
-    cutawayGroupStartViewRef.current = {
-      alpha: ed.camera.alpha, beta: ed.camera.beta, radius: ed.camera.radius, target: ed.camera.target.clone()
-    }
-    ed.camera.detachControl()
-    ed.camera.setTarget(ed.cutawayCenter)
-    ed.camera.alpha = -Math.PI / 2
-    ed.camera.beta = 0.0001
-    ed.camera.radius = Math.max(ed.cutawaySize.length() * 1.25, 1)
-    cutawayGroupModeRef.current = true
-    setCutawayGroupMode(true)
-    setCutawayGroupCount(0)
-    setCutawayGroupStatus('Top view locked: draw a freehand outline around group 1 of 4')
-    setStatus('Cutaway groups: draw circle 1 of 4')
-  }
-
-  const cancelCutawayGroupDrawing = () => {
-    cutawayGroupModeRef.current = false
-    setCutawayGroupMode(false)
-    restoreCutawayGroupCamera()
-    for (const ring of cutawayGroupRingsRef.current) ring.dispose(false, true)
-    cutawayGroupRingsRef.current = []
-    for (const group of cutawayGroupsRef.current) for (const mesh of group.meshes) {
-      const visible = cutawayBaseVisibility.get(mesh) ?? true
-      if (mesh.isVisible !== visible) mesh.isVisible = visible
-    }
-    cutawayGroupsRef.current = []
-    const ed = editorRef.current
-    if (ed) { ed.cutawayGroups = []; ed.cutawayEnabled = autoCutaway; ed.activeCutawaySignature = '' }
-    setCutawayGroupCount(0)
-    setCutawayGroupStatus('Drawing cancelled. Existing wall cutaway remains active.')
-    setStatus('Cutaway group drawing cancelled.')
-  }
-
-  const resetCutawayGroups = () => {
-    const ed = editorRef.current
-    cutawayGroupModeRef.current = false
-    setCutawayGroupMode(false)
-    restoreCutawayGroupCamera()
-    for (const ring of cutawayGroupRingsRef.current) ring.dispose(false, true)
-    cutawayGroupRingsRef.current = []
-    for (const group of cutawayGroupsRef.current) for (const mesh of group.meshes) {
-      const visible = cutawayBaseVisibility.get(mesh) ?? true
-      if (mesh.isVisible !== visible) mesh.isVisible = visible
-    }
-    cutawayGroupsRef.current = []
-    if (ed) { ed.cutawayGroups = []; ed.cutawayEnabled = autoCutaway; ed.activeCutawaySignature = '' }
-    setCutawayGroupCount(0)
-    setCutawayGroupStatus('Draw four freehand area outlines around the places you want grouped')
-    setStatus('Cutaway groups cleared. Existing wall cutaway is active.')
-  }
-
-  useEffect(() => {
-    const canvas = canvasRef.current
-    const ed = editorRef.current
-    if (!canvas || !ed || !cutawayGroupMode) return
-    canvas.classList.add('cutawayDrawing')
-    let drawing = false
-    let points: Vector3[] = []
-    let previewLine: LinesMesh | null = null
-    const palette = ['#22c55e', '#38bdf8', '#f59e0b', '#c084fc']
-    const pointOnTopPlane = (event: PointerEvent) => {
-      const rect = canvas.getBoundingClientRect()
-      const engine = ed.scene.getEngine()
-      const x = (event.clientX - rect.left) * engine.getRenderWidth() / Math.max(rect.width, 1)
-      const y = (event.clientY - rect.top) * engine.getRenderHeight() / Math.max(rect.height, 1)
-      const ray = ed.scene.createPickingRay(x, y, Matrix.Identity(), ed.camera)
-      if (Math.abs(ray.direction.y) < 1e-7) return null
-      const distance = (ed.cutawayCenter.y - ray.origin.y) / ray.direction.y
-      if (distance < 0) return null
-      const hit = ray.origin.add(ray.direction.scale(distance))
-      return new Vector3(hit.x, ed.cutawayCenter.y + 0.035, hit.z)
-    }
-    const redrawPreview = (closed = false) => {
-      previewLine?.dispose(false, true)
-      if (points.length < 2) return
-      const linePoints = closed ? [...points, points[0]] : points
-      previewLine = MeshBuilder.CreateLines('mobica-cutaway-freehand-preview', { points: linePoints }, ed.scene)
-      previewLine.color = Color3.FromHexString(palette[cutawayGroupsRef.current.length])
-      previewLine.isPickable = false
-      previewLine.doNotSerialize = true
-    }
-    const isInsidePolygon = (x: number, z: number, polygon: Vector3[]) => {
-      let inside = false
-      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-        const xi = polygon[i].x, zi = polygon[i].z
-        const xj = polygon[j].x, zj = polygon[j].z
-        const crosses = (zi > z) !== (zj > z)
-        if (crosses && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside
-      }
-      return inside
-    }
-    const segmentsIntersect = (a: Vector3, b: Vector3, c: Vector3, d: Vector3) => {
-      const orient = (p: Vector3, q: Vector3, r: Vector3) =>
-        (q.x - p.x) * (r.z - p.z) - (q.z - p.z) * (r.x - p.x)
-      const onSegment = (p: Vector3, q: Vector3, r: Vector3) =>
-        q.x >= Math.min(p.x, r.x) - 1e-7 && q.x <= Math.max(p.x, r.x) + 1e-7 &&
-        q.z >= Math.min(p.z, r.z) - 1e-7 && q.z <= Math.max(p.z, r.z) + 1e-7
-      const o1 = orient(a, b, c), o2 = orient(a, b, d)
-      const o3 = orient(c, d, a), o4 = orient(c, d, b)
-      if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) &&
-          ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0))) return true
-      return (Math.abs(o1) < 1e-7 && onSegment(a, c, b)) ||
-        (Math.abs(o2) < 1e-7 && onSegment(a, d, b)) ||
-        (Math.abs(o3) < 1e-7 && onSegment(c, a, d)) ||
-        (Math.abs(o4) < 1e-7 && onSegment(c, b, d))
-    }
-    // Treat the outline as a spatial region, not a point filter. A mesh is
-    // captured whenever its XZ world-space bounds overlap the drawn polygon.
-    // This includes nested child meshes and large parts crossing the outline.
-    const polygonOverlapsBounds = (bounds: BoundingBox, polygon: Vector3[]) => {
-      const min = bounds.minimumWorld
-      const max = bounds.maximumWorld
-      const corners = [
-        new Vector3(min.x, 0, min.z), new Vector3(max.x, 0, min.z),
-        new Vector3(max.x, 0, max.z), new Vector3(min.x, 0, max.z),
-      ]
-      if (corners.some(point => isInsidePolygon(point.x, point.z, polygon))) return true
-      if (polygon.some(point => point.x >= min.x && point.x <= max.x && point.z >= min.z && point.z <= max.z)) return true
-      for (let i = 0; i < polygon.length; i++) {
-        const a = polygon[i], b = polygon[(i + 1) % polygon.length]
-        for (let j = 0; j < corners.length; j++) {
-          if (segmentsIntersect(a, b, corners[j], corners[(j + 1) % corners.length])) return true
-        }
-      }
-      return false
-    }
-    const down = (event: PointerEvent) => {
-      if (!cutawayGroupModeRef.current || event.button !== 0) return
-      const point = pointOnTopPlane(event)
-      if (!point) return
-      event.preventDefault()
-      event.stopPropagation()
-      drawing = true
-      points = [point]
-      redrawPreview()
-      canvas.setPointerCapture?.(event.pointerId)
-    }
-    const move = (event: PointerEvent) => {
-      if (!drawing) return
-      const point = pointOnTopPlane(event)
-      if (!point) return
-      const previous = points[points.length - 1]
-      const minStep = Math.max(ed.cutawaySize.length() * 0.002, 0.008)
-      if (Vector3.Distance(previous, point) >= minStep) {
-        points.push(point)
-        redrawPreview()
-      }
-      event.preventDefault()
-      event.stopPropagation()
-    }
-    const up = (event: PointerEvent) => {
-      if (!drawing) return
-      drawing = false
-      const finalPoint = pointOnTopPlane(event)
-      if (finalPoint && Vector3.Distance(points[points.length - 1], finalPoint) > 0.005) points.push(finalPoint)
-      if (points.length < 3) {
-        previewLine?.dispose(false, true)
-        previewLine = null
-        setCutawayGroupStatus('Outline too short. Draw a closed shape with at least three points.')
-        return
-      }
-      const polygon = points.map(point => new Vector3(point.x, ed.cutawayCenter.y, point.z))
-      const area = Math.abs(polygon.reduce((sum, point, index) => {
-        const next = polygon[(index + 1) % polygon.length]
-        return sum + point.x * next.z - next.x * point.z
-      }, 0)) / 2
-      if (area < Math.max(ed.cutawaySize.length() ** 2 * 0.0002, 0.002)) {
-        previewLine?.dispose(false, true)
-        previewLine = null
-        setCutawayGroupStatus('Outline is too small. Draw a wider shape around the group.')
-        return
-      }
-      redrawPreview(true)
-      const alreadyAssigned = new Set(cutawayGroupsRef.current.flatMap(group => group.meshes.map(mesh => mesh.uniqueId)))
-      const meshes = ed.rootNodes.flatMap(root => findMeshes(root)).filter(mesh => {
-        if (mesh.getTotalVertices() === 0 || alreadyAssigned.has(mesh.uniqueId)) return false
-        mesh.computeWorldMatrix(true)
-        const bounds = mesh.getBoundingInfo().boundingBox
-        return polygonOverlapsBounds(bounds, polygon)
-      })
-      if (!meshes.length) {
-        previewLine?.dispose(false, true)
-        previewLine = null
-        setCutawayGroupStatus('No model parts overlap that area. Draw a wider outline around the place.')
-        return
-      }
-      for (const mesh of meshes) if (!cutawayBaseVisibility.has(mesh)) cutawayBaseVisibility.set(mesh, mesh.isVisible)
-      const index = cutawayGroupsRef.current.length
-      const center = polygon.reduce((sum, point) => sum.addInPlace(point), Vector3.Zero()).scale(1 / polygon.length)
-      const group: CutawayWall = {
-        name: `Freehand Group ${index + 1}`,
-        root: meshes[0],
-        meshes,
-        center: new Vector3(center.x, ed.cutawayCenter.y, center.z),
-        direction: Vector3.Zero()
-      }
-      cutawayGroupsRef.current = [...cutawayGroupsRef.current, group]
-      ed.cutawayGroups = cutawayGroupsRef.current
-      ed.activeCutawaySignature = ''
-      if (previewLine) cutawayGroupRingsRef.current.push(previewLine)
-      previewLine = null
-      setCutawayGroupCount(cutawayGroupsRef.current.length)
-      if (cutawayGroupsRef.current.length < 4) {
-        setCutawayGroupStatus(`Area ${index + 1}: ${meshes.length} overlapping parts captured. Draw freehand outline ${index + 2} of 4.`)
-        setStatus(`Cutaway group ${index + 1}/4 created · ${meshes.length} parts`)
-      } else {
-        for (const wall of ed.cutawayWalls) for (const mesh of wall.meshes) {
-          const visible = cutawayBaseVisibility.get(mesh) ?? true
-          if (mesh.isVisible !== visible) mesh.isVisible = visible
-        }
-        ed.cutawayEnabled = true
-        setAutoCutaway(true)
-        ed.activeCutawaySignature = ''
-        cutawayGroupModeRef.current = false
-        setCutawayGroupMode(false)
-        restoreCutawayGroupCamera()
-        setCutawayGroupStatus('Four freehand groups ready. Rotate the camera to test automatic cutaway.')
-        setStatus('Four freehand cutaway groups created. Rotate the camera to test them.')
-      }
-      event.preventDefault()
-      event.stopPropagation()
-    }
-    canvas.addEventListener('pointerdown', down, true)
-    canvas.addEventListener('pointermove', move, true)
-    canvas.addEventListener('pointerup', up, true)
-    canvas.addEventListener('pointercancel', up, true)
-    return () => {
-      canvas.classList.remove('cutawayDrawing')
-      previewLine?.dispose(false, true)
-      canvas.removeEventListener('pointerdown', down, true)
-      canvas.removeEventListener('pointermove', move, true)
-      canvas.removeEventListener('pointerup', up, true)
-      canvas.removeEventListener('pointercancel', up, true)
-    }
-  }, [cutawayGroupMode])
-
   const [color, setColor] = useState('#ffffff')
   const [roughness, setRoughness] = useState(0.75)
   const [metallic, setMetallic] = useState(0)
@@ -1072,7 +797,7 @@ function EditorApp() {
     scene.environmentTexture = env
     scene.environmentIntensity = 0.32
     const highlight = new HighlightLayer('selection', scene)
-    const ed: Editor = { scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [], cutawayGroups: [], cutawayMaterials: new Map(), cutawayEnabled: true, activeCutawaySignature: '', cutawayCenter: Vector3.Zero(), cutawaySize: Vector3.One() }
+    const ed: Editor = { scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [], cutawayMaterials: new Map(), cutawayEnabled: true, activeCutawaySignature: '', cutawayCenter: Vector3.Zero(), cutawaySize: Vector3.One() }
     editorRef.current = ed
     scene.onPointerObservable.add(info => {
       if (cutDrawModeRef.current) {
@@ -1159,7 +884,7 @@ function EditorApp() {
       }
     })
     engine.runRenderLoop(() => {
-      if (ed.cutawayEnabled && (ed.cutawayGroups.length || ed.cutawayWalls.length)) updateAutomaticCutaway(ed, ed.cutawayCenter, ed.cutawaySize)
+      if (ed.cutawayEnabled && ed.cutawayWalls.length) updateAutomaticCutaway(ed, ed.cutawayCenter, ed.cutawaySize)
       scene.render()
     })
     const resize = () => engine.resize()
@@ -1289,15 +1014,6 @@ function EditorApp() {
       highlightedIdsRef.current = new Set()
       setHighlightedIds(new Set())
       setSelected(null)
-      restoreCutawayGroupCamera()
-      cutawayGroupModeRef.current = false
-      setCutawayGroupMode(false)
-      cutawayGroupRingsRef.current.forEach(ring => ring.dispose(false, true))
-      cutawayGroupRingsRef.current = []
-      cutawayGroupsRef.current = []
-      setCutawayGroupCount(0)
-      setCutawayGroupStatus('Draw four freehand area outlines around the places you want grouped')
-      ed.cutawayGroups = []
       ed.rootNodes = roots
       ed.cutawayWalls = collectCutawayWalls(roots)
       ed.cutawayMaterials.clear()
@@ -2334,17 +2050,7 @@ function EditorApp() {
         while (parentId != null) { const parentItem = items.find(candidate => candidate.id === parentId); if (parentItem) path.unshift(parentItem.name); parentId = parentItem?.parentId ?? null }
         return <button type="button" className={`movePickerOption ${moveTargetId === String(item.id) ? 'chosen' : ''}`} key={item.id} onClick={() => { setMoveTargetId(String(item.id)); setMoveLayerQuery(path.join(' / ')); setMovePickerOpen(false) }}><strong>{item.name}</strong><small>{path.join(' / ')}</small></button>
       })}{items.filter(item => !selectedIds.has(item.id)).length === 0 && <div className="movePickerEmpty">No valid destination layers</div>}</div>}</div><button className="btn" onClick={moveSelectedToLayer} disabled={!selectedIds.size || !moveTargetId}>Move here</button></div>
-      <div className="cutawayControl"><label><input type="checkbox" checked={autoCutaway} onChange={e => setAutoCutaway(e.target.checked)} /> <span>Automatic room cutaway</span></label><small>Hides the camera-facing wall groups, or your four circle groups when configured, using the same 15° rotation rule.</small></div>
-      <div className="cutawayGroupControl">
-        <div className="cutawayGroupHeading"><strong>Freehand cutaway groups</strong><span>{cutawayGroupCount}/4</span></div>
-        <small>Draw four freehand outlines from a locked top view. All nested parts whose world bounds overlap each outlined area join that group. Camera rotation uses the same 15° wall-cutaway rule.</small>
-        <div className="cutawayGroupActions">
-          <button className="btn" onClick={startCutawayGroupDrawing} disabled={!modelRef.current || cutawayGroupMode}>{cutawayGroupCount ? 'Redraw 4 outlines' : 'Draw 4 outlines'}</button>
-          {cutawayGroupMode && <button className="btn" onClick={cancelCutawayGroupDrawing}>Cancel drawing</button>}
-          {cutawayGroupCount > 0 && !cutawayGroupMode && <button className="btn" onClick={resetCutawayGroups}>Clear groups</button>}
-        </div>
-        <div className="cutawayGroupStatus">{cutawayGroupMode ? 'Top view locked · drag to trace each group outline' : cutawayGroupStatus}</div>
-      </div>
+      <div className="cutawayControl"><label><input type="checkbox" checked={autoCutaway} onChange={e => setAutoCutaway(e.target.checked)} /> <span>Automatic room cutaway</span></label><small>Hides the two camera-facing wall groups together with every nested mesh. Keep all objects that should disappear with a wall inside that wall group.</small></div>
       <div className="layerSearch">
         <Search size={15}/>
         <input aria-label="Search layers" type="search" value={layerSearch} onChange={e => setLayerSearch(e.target.value)} placeholder="Search layers…" />
@@ -2697,7 +2403,7 @@ function SharedModelViewer({ id }: { id: string }) {
 
     const highlight = new HighlightLayer('shared-selection', scene)
     const sharedEd: Editor = {
-      scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [], cutawayGroups: [],
+      scene, camera, highlight, nodes: new Map(), rootNodes: [], cutawayWalls: [],
       cutawayMaterials: new Map(), cutawayEnabled: settings.autoCutaway ?? true,
       activeCutawaySignature: '', cutawayCenter: Vector3.Zero(), cutawaySize: Vector3.One()
     }
